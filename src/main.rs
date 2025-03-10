@@ -56,9 +56,6 @@ const TEXT_STYLE: MonoTextStyle<'static, BinaryColor> = MonoTextStyleBuilder::ne
     .text_color(BinaryColor::On)
     .build();
 
-static TEXT_LINE_1: Mutex<ThreadModeRawMutex, String<8>> = Mutex::new(String::<8>::new());
-static TEXT_LINE_2: Mutex<ThreadModeRawMutex, String<8>> = Mutex::new(String::<8>::new());
-//static mut TEXT_LINE_2: &str = "";
 // LCD buffer for text
 // Each item is a line of text
 static TEXT_BUFFER: Mutex<ThreadModeRawMutex, Vec<String<8>, 2>> = Mutex::new(Vec::new());
@@ -101,21 +98,14 @@ async fn temp(
                 let v = adc_ref.read(&mut adc_temp).await;
                 let celcius = convert_to_celcius(v);
                 info!("Internal temp: {=u16} ({} C)", v, celcius);
-                let mut text1: String<8> = String::new();
-                let mut text2: String<8> = String::new();
-                let _ = write(&mut text1, format_args!("T: {}", v));
-                let _ = write(&mut text2, format_args!("C: {:.2}", celcius));
-                //display_text(&DISPLAY, &text1, &text2).await;
-                //{
-                //    let mut t = TEXT_LINE_1.lock().await;
-                //    *t = text2;
-                //}
-                //*(TEXT_LINE_1.lock().await) = text2;
+                let mut text: String<8> = String::new();
+                let _ = write(&mut text, format_args!("C: {:.2}", celcius));
+                info!("len: {}", text.clone().into_bytes().len());
                 {
                     let mut t = TEXT_BUFFER.lock().await;
-                    t[0] = text2;
+                    t[0] = text;
                 }
-                display_text_x(&DISPLAY).await;
+                display_text(&DISPLAY).await;
             }
         }
         //Timer::after_millis(300).await;
@@ -133,21 +123,17 @@ async fn volt(adc: &'static AdcType, vrefint_sample: u16, delay: Duration, mut p
                 let v = adc_ref.read(&mut pin).await;
                 let mv = convert_to_millivolts(vrefint_sample)(v);
                 info!("Volt--> {} - {} mV", v, mv);
-                let mut text1: String<8> = String::new();
-                let mut text2: String<8> = String::new();
-                let _ = write(&mut text1, format_args!("V:  {}", v));
-                let _ = write(&mut text2, format_args!("mV: {}", mv));
-                //display_text(&DISPLAY, &text1, &text2).await;
-                //*(TEXT_LINE_2.lock().await) = text2;
+                let mut text: String<8> = String::new();
+                let _ = write(&mut text, format_args!("mV: {}", mv));
                 if (TEXT_BUFFER.lock().await.len()) < 2 {
                     info!("Text buffer length is less than 2");
                     core::panic!("Text buffer length is less than 2");
                 } else {
                     {
                         let mut t = TEXT_BUFFER.lock().await;
-                        t[1] = text2;
+                        t[1] = text;
                     }
-                    display_text_x(&DISPLAY).await;
+                    display_text(&DISPLAY).await;
                 }
             }
         }
@@ -155,21 +141,7 @@ async fn volt(adc: &'static AdcType, vrefint_sample: u16, delay: Duration, mut p
     }
 }
 
-async fn display_text(display: &'static DisplayType, text_line1: &str, text_line2: &str) {
-    let mut display_unlocked = display.lock().await;
-    if let Some(display_ref) = display_unlocked.as_mut() {
-        display_ref.clear_buffer();
-        Text::with_baseline(text_line1, Point::zero(), TEXT_STYLE, Baseline::Top)
-            .draw(display_ref)
-            .unwrap();
-        Text::with_baseline(text_line2, Point::new(0, 20), TEXT_STYLE, Baseline::Top)
-            .draw(display_ref)
-            .unwrap();
-        display_ref.flush().unwrap();
-    }
-}
-
-async fn display_text_x(display: &'static DisplayType) {
+async fn display_text(display: &'static DisplayType) {
     // Check text buffer length
     if (TEXT_BUFFER.lock().await.len()) < 2 {
         info!("Text buffer length is less than 2");
@@ -180,7 +152,6 @@ async fn display_text_x(display: &'static DisplayType) {
     if let Some(display_ref) = display_unlocked.as_mut() {
         display_ref.clear_buffer();
         Text::with_baseline(
-            // TEXT_LINE_1.lock().await.as_str(),
             TEXT_BUFFER.lock().await[0].as_str(),
             Point::zero(),
             TEXT_STYLE,
@@ -189,7 +160,6 @@ async fn display_text_x(display: &'static DisplayType) {
         .draw(display_ref)
         .unwrap();
         Text::with_baseline(
-            //TEXT_LINE_2.lock().await.as_str(),
             TEXT_BUFFER.lock().await[1].as_str(),
             Point::new(0, 20),
             TEXT_STYLE,
@@ -228,19 +198,9 @@ async fn main(spawner: Spawner) {
     }
     DISPLAY.lock().await.as_mut().unwrap().init().unwrap();
 
-    // Initialize text buffer
-    TEXT_BUFFER
-        .lock()
-        .await
-        .push(String::<8>::new())
-        .expect("Failed to push to text buffer");
-    TEXT_BUFFER
-        .lock()
-        .await
-        .push(String::<8>::new())
-        .expect("Failed to push to text buffer");
-
-    display_text(&DISPLAY, "text_line1", "text_line2").await;
+    // Initialize text buffer with 2 lines
+    TEXT_BUFFER.lock().await.push(String::<8>::new()).unwrap();
+    TEXT_BUFFER.lock().await.push(String::<8>::new()).unwrap();
 
     Timer::after_millis(300).await;
 
