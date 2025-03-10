@@ -4,7 +4,7 @@
 // mod display;
 // use display::*;
 
-use core::fmt::{self, Write};
+use core::fmt::write;
 use embedded_graphics::mono_font::iso_8859_13::FONT_10X20;
 use embedded_graphics::mono_font::MonoTextStyle;
 use heapless::String;
@@ -21,12 +21,12 @@ use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Timer};
 use embedded_graphics::{
-    mono_font::{ascii::FONT_6X10, MonoTextStyleBuilder},
+    mono_font::MonoTextStyleBuilder,
     pixelcolor::BinaryColor,
     prelude::*,
     text::{Baseline, Text},
 };
-use ssd1306::mode::{BufferedGraphicsMode, TerminalMode};
+use ssd1306::mode::BufferedGraphicsMode;
 use ssd1306::{prelude::*, I2CDisplayInterface, Ssd1306};
 use {defmt_rtt as _, panic_probe as _};
 
@@ -46,7 +46,6 @@ type DisplayType = Mutex<
             I2CInterface<I2c<'static, Async>>,
             DisplaySize128x64,
             BufferedGraphicsMode<DisplaySize128x64>,
-            //TerminalMode,
         >,
     >,
 >;
@@ -83,7 +82,6 @@ async fn temp(
         const AVG_SLOPE: f32 = 4.3; // mV/C
 
         let sample_mv = convert_to_millivolts(vrefint_sample)(sample) as i32;
-        //info!("temp sample_mv={}", sample_mv);
 
         (sample_mv - V25) as f32 / AVG_SLOPE + 25.0
     };
@@ -98,9 +96,8 @@ async fn temp(
                 info!("Internal temp: {=u16} ({} C)", v, celcius);
                 let mut text_line1: String<8> = String::new();
                 let mut text_line2: String<8> = String::new();
-                let _ = core::fmt::Write::write_fmt(&mut text_line1, format_args!("T: {}", v));
-                let _ =
-                    core::fmt::Write::write_fmt(&mut text_line2, format_args!("C: {:.2}", celcius));
+                let _ = write(&mut text_line1, format_args!("T: {}", v));
+                let _ = write(&mut text_line2, format_args!("C: {:.2}", celcius));
                 display_text(&DISPLAY, &text_line1, &text_line2).await;
             }
         }
@@ -121,8 +118,9 @@ async fn volt(adc: &'static AdcType, vrefint_sample: u16, delay: Duration, mut p
                 info!("Volt--> {} - {} mV", v, mv);
                 let mut text_line1: String<8> = String::new();
                 let mut text_line2: String<8> = String::new();
-                let _ = core::fmt::Write::write_fmt(&mut text_line1, format_args!("V:  {}", v));
-                let _ = core::fmt::Write::write_fmt(&mut text_line2, format_args!("mV: {}", mv));
+                //let _ = core::fmt::Write::write_fmt(&mut text_line1, format_args!("V:  {}", v));
+                let _ = write(&mut text_line1, format_args!("V:  {}", v));
+                let _ = write(&mut text_line2, format_args!("mV: {}", mv));
                 display_text(&DISPLAY, &text_line1, &text_line2).await;
             }
         }
@@ -130,31 +128,7 @@ async fn volt(adc: &'static AdcType, vrefint_sample: u16, delay: Duration, mut p
     }
 }
 
-async fn display_text(
-    /*
-    display: &mut Ssd1306<
-        I2CInterface<I2c<'static, Async>>,
-        DisplaySize128x64,
-        BufferedGraphicsMode<DisplaySize128x64>,
-    >,
-    */
-    display: &'static DisplayType,
-    text_line1: &str,
-    text_line2: &str,
-) {
-    /*
-    let text_style = MonoTextStyleBuilder::new()
-        .font(&FONT_10X20)
-        .text_color(BinaryColor::On)
-        .build();
-
-        Text::with_baseline(text_line1, Point::zero(), text_style, Baseline::Top)
-            .draw(display)
-            .unwrap();
-        Text::with_baseline(text_line2, Point::new(0, 16), text_style, Baseline::Top)
-            .draw(display)
-            .unwrap();
-    */
+async fn display_text(display: &'static DisplayType, text_line1: &str, text_line2: &str) {
     let mut display_unlocked = display.lock().await;
     if let Some(display_ref) = display_unlocked.as_mut() {
         display_ref.clear_buffer();
@@ -166,13 +140,6 @@ async fn display_text(
             .unwrap();
         display_ref.flush().unwrap();
     }
-    /*
-    let mut display_unlocked = display.lock().await;
-    if let Some(display_ref) = display_unlocked.as_mut() {
-        let _ = display_ref.write_str(text_line1);
-        let _ = display_ref.write_str(text_line2);
-    }
-    */
 }
 
 #[embassy_executor::main]
@@ -193,35 +160,16 @@ async fn main(spawner: Spawner) {
     );
 
     let interface = I2CDisplayInterface::new(i2c);
-    //let interface = I2CDisplayInterface::new_custom_address(i2c, 0x3C); //I2CDisplayInterface::new(i2c);
     let mut display = Ssd1306::new(interface, DisplaySize128x64, DisplayRotation::Rotate0)
         .into_buffered_graphics_mode();
-    //.into_terminal_mode();
 
     display.init().unwrap();
-    //display.clear().unwrap();
 
     {
         *(DISPLAY.lock().await) = Some(display);
     }
 
     display_text(&DISPLAY, "text_line1", "").await;
-
-    /*
-        let text_style = MonoTextStyleBuilder::new()
-            .font(&FONT_6X10)
-            .text_color(BinaryColor::On)
-            .build();
-
-        Text::with_baseline("text_line1", Point::zero(), text_style, Baseline::Top)
-            .draw(&mut display)
-            .unwrap();
-        Text::with_baseline("text_line2", Point::new(0, 16), text_style, Baseline::Top)
-            .draw(&mut display)
-            .unwrap();
-
-        display.flush().unwrap();
-    */
 
     Timer::after_millis(300).await;
 
