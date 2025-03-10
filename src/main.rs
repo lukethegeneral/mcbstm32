@@ -125,16 +125,11 @@ async fn volt(adc: &'static AdcType, vrefint_sample: u16, delay: Duration, mut p
                 info!("Volt--> {} - {} mV", v, mv);
                 let mut text: String<8> = String::new();
                 let _ = write(&mut text, format_args!("mV: {}", mv));
-                if (TEXT_BUFFER.lock().await.len()) < 2 {
-                    info!("Text buffer length is less than 2");
-                    core::panic!("Text buffer length is less than 2");
-                } else {
-                    {
-                        let mut t = TEXT_BUFFER.lock().await;
-                        t[1] = text;
-                    }
-                    display_text(&DISPLAY).await;
+                {
+                    let mut t = TEXT_BUFFER.lock().await;
+                    t[1] = text;
                 }
+                display_text(&DISPLAY).await;
             }
         }
         Timer::after(delay).await;

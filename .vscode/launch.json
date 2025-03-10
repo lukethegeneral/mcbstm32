@@ -14,7 +14,7 @@
 			"coreConfigs": [
 				{
 					"coreIndex": 0,
-					"programBinary": "./target/thumbv7em-none-eabihf/debug/mcbstm32"
+					"programBinary": "./target/thumbv7m-none-eabi/debug/mcbstm32"
 				}
 			]
 		}
