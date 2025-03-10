@@ -46,6 +46,7 @@ embassy-time = { version = "0.4", features = [
 	"defmt-timestamp-uptime",
 ] }
 cortex-m = { version = "0.7.6", features = ["critical-section-single-core"] }
+heapless = "0.8.0"
 [profile.release]
 debug = 2
 lto = true
