@@ -5,7 +5,6 @@ mod display;
 use display::{Lcd, TEXT_BUFFER_LEN};
 
 mod log;
-use embassy_stm32::pac::Interrupt::SPI1;
 use log::LogFile;
 
 use core::fmt::write;
@@ -24,7 +23,7 @@ use embassy_stm32::time::Hertz;
 use embassy_stm32::{adc, bind_interrupts, i2c, peripherals, spi, Config};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::mutex::Mutex;
-use embassy_time::{Delay, Duration, Ticker, Timer};
+use embassy_time::{Duration, Ticker, Timer};
 use embedded_hal_bus::spi::{ExclusiveDevice, NoDelay};
 use {defmt_rtt as _, panic_probe as _};
 
@@ -71,10 +70,11 @@ async fn tick_periodic(log_file: &'static LogFileType) -> ! {
         let mut text: String<TEXT_BUFFER_LEN> = String::new();
         let _ = write(&mut text, format_args!("\n[{}]\n", counter));
 
-        let mut log_file_unlocked = log_file.lock().await;
-        if let Some(log_file_ref) = log_file_unlocked.as_mut() {
-            log_file_ref.log_data(text.as_bytes()).await;
-            //   log_file_ref.log_file.flush().unwrap();
+        {
+            let mut log_file_unlocked = log_file.lock().await;
+            if let Some(log_file_ref) = log_file_unlocked.as_mut() {
+                log_file_ref.log_data(text.as_bytes()).await;
+            }
         }
 
         Timer::after(Duration::from_millis(1000)).await; // 1 second
@@ -91,7 +91,7 @@ async fn temp(
     delay: Duration,
     mut adc_temp: Temperature,
     lcd: &'static LcdType,
-) -> ! {
+) {
     //let mut ticker = Ticker::every(delay);
 
     let convert_to_celcius = |sample| {
@@ -136,9 +136,9 @@ async fn volt(
     mut pin: peripherals::PA1,
     lcd: &'static LcdType,
     log_file: &'static LogFileType,
-) -> ! {
+) {
     //let mut ticker = Ticker::every(delay);
-    static BUF_SIZE: usize = 300;
+    static BUF_SIZE: usize = 3;
     let mut buf_mv = [0u8; BUF_SIZE];
     let mut buf_mv_idx = 0;
     loop {
@@ -173,6 +173,14 @@ async fn volt(
                     buf_mv[buf_mv_idx + 1],
                     buf_mv[buf_mv_idx + 2],
                 );
+                info!("buf_mv: {:?}", buf_mv);
+                {
+                    let mut log_file_unlocked = log_file.lock().await;
+                    if let Some(log_file_ref) = log_file_unlocked.as_mut() {
+                        log_file_ref.log_data(&buf_mv).await;
+                    }
+                }
+                /*
                 if buf_mv_idx >= BUF_SIZE - 3 {
                     //for elem in buf_mv.iter() {
                     info!("buf_mv: {:?}", buf_mv);
@@ -186,6 +194,7 @@ async fn volt(
                 } else {
                     buf_mv_idx += 3;
                 }
+                */
             }
         }
         Timer::after(delay).await;
@@ -288,5 +297,5 @@ async fn main(spawner: Spawner) {
         adc_temp,
         &LCD
     )));
-    //unwrap!(spawner.spawn(tick_periodic(&LOG_FILE)));
+    unwrap!(spawner.spawn(tick_periodic(&LOG_FILE)));
 }
