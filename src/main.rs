@@ -4,7 +4,7 @@
 // mod display;
 // use display::*;
 
-use core::fmt::write;
+use core::fmt::{write, Write};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embedded_graphics::mono_font::iso_8859_13::FONT_10X20;
@@ -14,7 +14,7 @@ use static_cell::StaticCell;
 
 use defmt::*;
 use embassy_executor::Spawner;
-use embassy_stm32::adc::{Adc, Temperature};
+use embassy_stm32::adc::{Adc, SampleTime, Temperature};
 use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::i2c::I2c;
 use embassy_stm32::mode::Async;
@@ -24,7 +24,7 @@ use embassy_stm32::time::Hertz;
 use embassy_stm32::{adc, bind_interrupts, i2c, peripherals, spi, Config};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::mutex::Mutex;
-use embassy_time::{Delay, Duration, Timer};
+use embassy_time::{Delay, Duration, Ticker, Timer};
 use embedded_graphics::{
     mono_font::MonoTextStyleBuilder,
     pixelcolor::BinaryColor,
@@ -66,11 +66,64 @@ const TEXT_STYLE: MonoTextStyle<'static, BinaryColor> = MonoTextStyleBuilder::ne
     .text_color(BinaryColor::On)
     .build();
 
+type TextBufferType = Mutex<ThreadModeRawMutex, Vec<String<TEXT_BUFFER_LEN>, 2>>;
 const TEXT_BUFFER_LEN: usize = 10;
 // LCD buffer for text
 // Each item is a line of text
-static TEXT_BUFFER: Mutex<ThreadModeRawMutex, Vec<String<TEXT_BUFFER_LEN>, 2>> =
-    Mutex::new(Vec::new());
+static TEXT_BUFFER: TextBufferType = Mutex::new(Vec::new());
+
+/*
+struct Lcd {
+    display: &'static DisplayType,
+    text_buffer: &'static TextBufferType,
+}
+impl Lcd {
+    pub async fn new(self) -> Self {
+        // Initialize text buffer with 2 lines
+        self.text_buffer
+            .lock()
+            .await
+            .push(String::<TEXT_BUFFER_LEN>::new())
+            .unwrap();
+        self.text_buffer
+            .lock()
+            .await
+            .push(String::<TEXT_BUFFER_LEN>::new())
+            .unwrap();
+
+        Self {
+            display: self.display,
+            text_buffer: self.text_buffer,
+        }
+    }
+}
+*/
+struct Lcd {
+    display: Ssd1306<
+        I2CInterface<I2c<'static, Async>>,
+        DisplaySize128x64,
+        BufferedGraphicsMode<DisplaySize128x64>,
+    >,
+    text_buffer: Vec<String<TEXT_BUFFER_LEN>, 2>,
+}
+impl Lcd {
+    pub async fn new(mut self) -> Self {
+        // Initialize text buffer with 2 lines
+        self.text_buffer
+            .push(String::<TEXT_BUFFER_LEN>::new())
+            .unwrap();
+        self.text_buffer
+            .push(String::<TEXT_BUFFER_LEN>::new())
+            .unwrap();
+
+        Self {
+            display: self.display,
+            text_buffer: self.text_buffer,
+        }
+    }
+}
+type LcdType = Mutex<ThreadModeRawMutex, Option<Lcd>>;
+static LCD: LcdType = Mutex::new(None);
 
 type LogFileType = Mutex<
     ThreadModeRawMutex,
@@ -117,12 +170,13 @@ fn convert_to_millivolts(vrefint_sample: u16) -> impl Fn(u16) -> u16 {
 }
 
 #[embassy_executor::task]
-/// Task that ticks periodically
+// Task that ticks periodically
 async fn tick_periodic() -> ! {
     let mut counter: u32 = 0;
+    let mut ticker = Ticker::every(Duration::from_secs(1));
     loop {
-        SIGNAL.signal(counter);
-        counter = counter.wrapping_add(1);
+        // SIGNAL.signal(counter);
+        // counter = counter.wrapping_add(1);
 
         info!("tick! {}", counter);
 
@@ -131,7 +185,10 @@ async fn tick_periodic() -> ! {
         log_data(&LOG_FILE, text.as_bytes()).await;
         LOG_FILE.lock().await.as_mut().unwrap().flush().unwrap();
 
-        Timer::after(Duration::from_millis(1000)).await;
+        //Timer::after(Duration::from_millis(1000)).await; // 1 second
+        ticker.next().await;
+
+        counter += 1;
     }
 }
 
@@ -142,6 +199,8 @@ async fn temp(
     delay: Duration,
     mut adc_temp: Temperature,
 ) {
+    let mut ticker = Ticker::every(delay);
+
     let convert_to_celcius = |sample| {
         // From http://www.st.com/resource/en/datasheet/CD00161566.pdf
         // Temperature sensor characteristics
@@ -163,15 +222,18 @@ async fn temp(
                 info!("Internal temp: {=u16} ({} C)", v, celcius);
                 let mut text: String<TEXT_BUFFER_LEN> = String::new();
                 let _ = write(&mut text, format_args!("C: {:.2}", celcius));
-                //info!("len: {}", text.clone().into_bytes().len());
+                //text.write_fmt(format_args!["C: {:.2}", celcius]).unwrap();
                 {
-                    let mut t = TEXT_BUFFER.lock().await;
+                    //let mut t = TEXT_BUFFER.lock().await;
+                    let mut t = LCD.text_buffer.lock().await;
                     t[0] = text;
                 }
-                display_text(&DISPLAY).await;
+                //display_text(&DISPLAY).await;
+                display_text(&LCD.display).await;
             }
         }
         Timer::after(delay).await;
+        //ticker.next().await;
     }
 }
 
@@ -182,6 +244,16 @@ async fn volt(
     delay: Duration,
     mut pin: peripherals::PA1,
 ) {
+    let mut ticker = Ticker::every(delay);
+    //let buf: &[u8] = &[1u8; 100];
+    //let mut buf_log = Vec::<&[u8], 100>::new();
+    //let mut buf_mv = Vec::<u16, 100>::new();
+    static BUF_SIZE: usize = 300;
+    let mut buf_mv = [0u8; BUF_SIZE];
+    let mut buf_mv_idx = 0;
+    //static TEXT: StaticCell<String<TEXT_BUFFER_LEN>> = StaticCell::new();
+    //let text = TEXT.init(text);
+    //let mut text_log: String<TEXT_BUFFER_LEN> = String::new();
     loop {
         {
             let mut adc_unlocked = adc.lock().await;
@@ -192,23 +264,47 @@ async fn volt(
                 info!("Volt--> {} - {} mV", v, mv);
 
                 // Write to display
-                let mut text: String<TEXT_BUFFER_LEN> = String::new();
-                let _ = write(&mut text, format_args!("mV: {}", mv));
+                //let _ = text_lcd.write_fmt(format_args!["mV: {}", mv]);
+                let mut text_lcd: String<TEXT_BUFFER_LEN> = String::new();
+                let _ = write(&mut text_lcd, format_args!["mV: {}", mv]);
                 {
                     let mut t = TEXT_BUFFER.lock().await;
-                    t[1] = text.clone();
+                    t[1] = text_lcd;
                 }
                 display_text(&DISPLAY).await;
 
+                // Write to buffer
+                let mv_bytes = mv.to_be_bytes();
+                buf_mv[buf_mv_idx] = mv_bytes[0];
+                buf_mv[buf_mv_idx + 1] = mv_bytes[1];
+                buf_mv[buf_mv_idx + 2] = ',' as u8;
+                info!(
+                    "index[{}] mv: {} buf: 0x{:x} 0x{:x} {}",
+                    buf_mv_idx,
+                    mv,
+                    buf_mv[buf_mv_idx],
+                    buf_mv[buf_mv_idx + 1],
+                    buf_mv[buf_mv_idx + 2],
+                );
+                if buf_mv_idx >= BUF_SIZE - 3 {
+                    //for elem in buf_mv.iter() {
+                    info!("buf_mv: {:?}", buf_mv);
+                    log_data(&LOG_FILE, &buf_mv).await;
+                    //}
+                    buf_mv_idx = 0;
+                } else {
+                    buf_mv_idx += 3;
+                }
+                //let mv_bytes = mv.to_be_bytes();
+                //log_data(&LOG_FILE, &mv_bytes).await;
                 // Write to SD card
-                text.clear();
-                //let received_counter = SIGNAL.wait().await;
-                //let _ = write(&mut text, format_args!("{}\n", mv));
-                let _ = write(&mut text, format_args!("{},", mv));
-                log_data(&LOG_FILE, text.as_bytes()).await;
+                //let mut text_log: String<TEXT_BUFFER_LEN> = String::new();
+                //let _ = write(&mut text_log, format_args!("{},", mv));
+                //log_data(&LOG_FILE, text_log.as_bytes()).await;
             }
         }
         Timer::after(delay).await;
+        //ticker.next().await;
     }
 }
 
@@ -216,7 +312,7 @@ async fn log_data(log_file: &'static LogFileType, data: &[u8]) {
     let mut log_file_unlocked = log_file.lock().await;
     if let Some(log_file_ref) = log_file_unlocked.as_mut() {
         log_file_ref.write(data).expect("Error writing to log file");
-        //log_file_ref.flush().unwrap();
+        log_file_ref.flush().unwrap();
     }
 }
 
@@ -255,24 +351,31 @@ async fn main(spawner: Spawner) {
     let mut config = Config::default();
     {
         use embassy_stm32::rcc::*;
-        config.rcc.ls = LsConfig::default_lse();
+        config.rcc.ls = LsConfig {
+            rtc: RtcClockSource::LSE,
+            lsi: false,
+            lse: Some(LseConfig {
+                frequency: Hertz(32_768),
+                mode: LseMode::Oscillator(LseDrive::MediumLow),
+            }),
+        };
         config.rcc.hse = Some(Hse {
             freq: Hertz(8_000_000),
-            // Oscillator for bluepill, Bypass for nucleos.
             mode: HseMode::Oscillator,
         });
         config.rcc.pll = Some(Pll {
             src: PllSource::HSE,
             prediv: PllPreDiv::DIV1,
-            mul: PllMul::MUL9,
+            mul: PllMul::MUL2,
         });
         config.rcc.sys = Sysclk::PLL1_P;
         config.rcc.ahb_pre = AHBPrescaler::DIV1;
-        config.rcc.apb1_pre = APBPrescaler::DIV2;
+        config.rcc.apb1_pre = APBPrescaler::DIV1;
         config.rcc.apb2_pre = APBPrescaler::DIV1;
+        config.rcc.adc_pre = ADCPrescaler::DIV2;
     }
-    //let p = embassy_stm32::init(Default::default());
     let p = embassy_stm32::init(config);
+    //let p = embassy_stm32::init(Default::default());
 
     info!("Time to start!");
 
@@ -288,15 +391,26 @@ async fn main(spawner: Spawner) {
     );
 
     let interface = I2CDisplayInterface::new(i2c);
-    let display = Ssd1306::new(interface, DisplaySize128x64, DisplayRotation::Rotate0)
+    let mut display = Ssd1306::new(interface, DisplaySize128x64, DisplayRotation::Rotate0)
         .into_buffered_graphics_mode();
 
-    //display.init().unwrap();
+    display.init().unwrap();
+    /*
     {
         *(DISPLAY.lock().await) = Some(display);
     }
     DISPLAY.lock().await.as_mut().unwrap().init().unwrap();
+    */
 
+    let lcd = Lcd {
+        display: display,
+        text_buffer: Vec::new(),
+    };
+
+    {
+        *(LCD.lock().await) = Some(Lcd::new(lcd).await);
+    }
+    /*
     // Initialize text buffer with 2 lines
     TEXT_BUFFER
         .lock()
@@ -308,6 +422,7 @@ async fn main(spawner: Spawner) {
         .await
         .push(String::<TEXT_BUFFER_LEN>::new())
         .unwrap();
+    */
 
     // SPI
     // SPI clock needs to be running at <= 400kHz during initialization
@@ -324,7 +439,7 @@ async fn main(spawner: Spawner) {
 
     // Now that the card is initialized, the SPI clock can go faster
     let mut spi_cfg = spi::Config::default();
-    spi_cfg.frequency = Hertz(72_000_000);
+    spi_cfg.frequency = Hertz(16_000_000); // 16MHz
     sdcard
         .spi(|dev| dev.bus_mut().set_config(&spi_cfg))
         .unwrap();
@@ -385,14 +500,14 @@ async fn main(spawner: Spawner) {
     {
         *(LOG_FILE.lock().await) = Some(log_file);
     }
-    //log_file.close().unwrap();
-    let mut text: String<TEXT_BUFFER_LEN> = String::new();
-    let _ = write(&mut text, format_args!("Start\n"));
-    log_data(&LOG_FILE, text.as_bytes()).await;
-    LOG_FILE.lock().await.as_mut().unwrap().flush().unwrap();
+    //let mut text: String<TEXT_BUFFER_LEN> = String::new();
+    //let _ = write(&mut text, format_args!("Start\n"));
+    //log_data(&LOG_FILE, text.as_bytes()).await;
+    //LOG_FILE.lock().await.as_mut().unwrap().flush().unwrap();
 
     // ADC
-    let adc = Adc::new(p.ADC1);
+    let mut adc = Adc::new(p.ADC1);
+    adc.set_sample_time(SampleTime::CYCLES28_5);
     {
         *(ADC.lock().await) = Some(adc);
     }
@@ -401,13 +516,16 @@ async fn main(spawner: Spawner) {
     let vrefint_sample = ADC.lock().await.as_mut().unwrap().read(&mut vrefint).await;
     let adc_temp = ADC.lock().await.as_mut().unwrap().enable_temperature();
 
+    let dt = 100 * 1_000_000;
+    let k = 1.003;
     // Run tasks
+    unwrap!(spawner.spawn(volt(&ADC, vrefint_sample, Duration::from_nanos(dt), p.PA1)));
     unwrap!(spawner.spawn(temp(
         &ADC,
         vrefint_sample,
-        Duration::from_millis(100),
+        //Duration::from_millis(100),
+        Duration::from_nanos((dt as f64 * k) as u64),
         adc_temp
     )));
-    unwrap!(spawner.spawn(volt(&ADC, vrefint_sample, Duration::from_millis(1), p.PA1)));
     unwrap!(spawner.spawn(tick_periodic()));
 }

@@ -38,6 +38,7 @@ embassy-stm32 = { version = "0.2.0", features = [
 	"stm32f103rb",
 	"unstable-pac",
 	"memory-x",
+	#"time-driver-tim1",
 	"time-driver-any",
 ] }
 embassy-executor = { version = "0.7", features = [
@@ -51,6 +52,7 @@ embassy-sync = { version = "0.6" }
 embassy-time = { version = "0.4", features = [
 	"defmt",
 	"defmt-timestamp-uptime",
+	"tick-hz-32_768",
 ] }
 cortex-m = { version = "0.7.6", features = ["critical-section-single-core"] }
 [profile.release]
