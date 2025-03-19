@@ -4,7 +4,7 @@
 // mod display;
 // use display::*;
 
-use core::fmt::{write, Write};
+use core::fmt::write;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embedded_graphics::mono_font::iso_8859_13::FONT_10X20;
@@ -49,6 +49,7 @@ static SIGNAL: Signal<CriticalSectionRawMutex, u32> = Signal::new();
 type AdcType = Mutex<ThreadModeRawMutex, Option<Adc<'static, ADC1>>>;
 static ADC: AdcType = Mutex::new(None);
 
+/*
 type DisplayType = Mutex<
     ThreadModeRawMutex,
     Option<
@@ -59,15 +60,16 @@ type DisplayType = Mutex<
         >,
     >,
 >;
+*/
 
 const TEXT_STYLE: MonoTextStyle<'static, BinaryColor> = MonoTextStyleBuilder::new()
     .font(&FONT_10X20)
     .text_color(BinaryColor::On)
     .build();
 
-type TextBufferType = Mutex<ThreadModeRawMutex, Vec<String<TEXT_BUFFER_LEN>, 2>>;
 const TEXT_BUFFER_LEN: usize = 10;
-static TEXT_BUFFER: TextBufferType = Mutex::new(Vec::new());
+//type TextBufferType = Mutex<ThreadModeRawMutex, Vec<String<TEXT_BUFFER_LEN>, 2>>;
+//static TEXT_BUFFER: TextBufferType = Mutex::new(Vec::new());
 
 struct Lcd {
     display: Ssd1306<
@@ -96,6 +98,7 @@ impl Lcd {
             text_buffer,
         }
     }
+
     fn display_text(&mut self) {
         // Check text buffer length
         if (self.text_buffer.len()) < 2 {
@@ -130,6 +133,95 @@ impl Lcd {
 type LcdType = Mutex<ThreadModeRawMutex, Option<Lcd>>;
 static LCD: LcdType = Mutex::new(None);
 
+// Log file
+struct LogFile {
+    log_file: File<
+        'static,
+        SdCard<ExclusiveDevice<Spi<'static, Async>, Output<'static>, NoDelay>, Delay>,
+        DummyTimesource,
+        4,
+        4,
+        1,
+    >,
+}
+
+impl LogFile {
+    fn new(
+        spi_dev: ExclusiveDevice<Spi<'static, Async>, Output<'static>, NoDelay>,
+        file_name: &str,
+    ) -> Self {
+        let sdcard = SdCard::new(spi_dev, Delay);
+        info!("Card size is {} bytes", sdcard.num_bytes().unwrap());
+
+        // Now that the card is initialized, the SPI clock can go faster
+        let mut spi_cfg = spi::Config::default();
+        spi_cfg.frequency = Hertz(16_000_000); // 16MHz
+        sdcard
+            .spi(|dev| dev.bus_mut().set_config(&spi_cfg))
+            .unwrap();
+
+        // Now let's look for volumes (also known as partitions) on our block device.
+        // To do this we need a Volume Manager. It will take ownership of the block device.
+        let volume_mgr = embedded_sdmmc::VolumeManager::new(sdcard, DummyTimesource());
+
+        static VOL: StaticCell<
+            VolumeManager<
+                SdCard<ExclusiveDevice<Spi<'_, Async>, Output<'_>, NoDelay>, Delay>,
+                DummyTimesource,
+            >,
+        > = StaticCell::new();
+        let volume_mgr = VOL.init(volume_mgr);
+
+        // Try and access Volume 0 (i.e. the first partition).
+        // The volume object holds information about the filesystem on that volume.
+        let volume0 = volume_mgr
+            .open_volume(embedded_sdmmc::VolumeIdx(0))
+            .unwrap();
+        info!("Volume 0: {:?}", defmt::Debug2Format(&volume0));
+
+        static VOL0: StaticCell<
+            embedded_sdmmc::Volume<
+                '_,
+                SdCard<ExclusiveDevice<Spi<'_, Async>, Output<'_>, NoDelay>, Delay>,
+                DummyTimesource,
+                4,
+                4,
+                1,
+            >,
+        > = StaticCell::new();
+        let volume0 = VOL0.init(volume0);
+
+        // Open the root directory (mutably borrows from the volume).
+        let root_dir = volume0.open_root_dir().unwrap();
+
+        static ROOT: StaticCell<
+            embedded_sdmmc::Directory<
+                '_,
+                SdCard<ExclusiveDevice<Spi<'_, Async>, Output<'_>, NoDelay>, Delay>,
+                DummyTimesource,
+                4,
+                4,
+                1,
+            >,
+        > = StaticCell::new();
+        let root_dir = ROOT.init(root_dir);
+
+        let log_file = root_dir
+            .open_file_in_dir(file_name, embedded_sdmmc::Mode::ReadWriteCreateOrTruncate)
+            .unwrap();
+
+        Self { log_file }
+    }
+
+    fn log_data(&mut self, data: &[u8]) {
+        self.log_file
+            .write(data)
+            .expect("Error writing to log file");
+        self.log_file.flush().unwrap();
+    }
+}
+
+/*
 type LogFileType = Mutex<
     ThreadModeRawMutex,
     Option<
@@ -143,7 +235,10 @@ type LogFileType = Mutex<
         >,
     >,
 >;
+*/
 
+//static LOG_FILE: LogFileType = Mutex::new(None);
+type LogFileType = Mutex<ThreadModeRawMutex, Option<LogFile>>;
 static LOG_FILE: LogFileType = Mutex::new(None);
 
 // Dummy time source for SD card
@@ -176,7 +271,7 @@ fn convert_to_millivolts(vrefint_sample: u16) -> impl Fn(u16) -> u16 {
 
 #[embassy_executor::task]
 // Task that ticks periodically
-async fn tick_periodic() -> ! {
+async fn tick_periodic(log_file: &'static LogFileType) -> ! {
     let mut counter: u32 = 0;
     let mut ticker = Ticker::every(Duration::from_secs(1));
     loop {
@@ -187,8 +282,12 @@ async fn tick_periodic() -> ! {
 
         let mut text: String<TEXT_BUFFER_LEN> = String::new();
         let _ = write(&mut text, format_args!("\n[{}]\n", counter));
-        log_data(&LOG_FILE, text.as_bytes()).await;
-        LOG_FILE.lock().await.as_mut().unwrap().flush().unwrap();
+
+        let mut log_file_unlocked = log_file.lock().await;
+        if let Some(log_file_ref) = log_file_unlocked.as_mut() {
+            log_file_ref.log_data(text.as_bytes());
+            log_file_ref.log_file.flush().unwrap();
+        }
 
         //Timer::after(Duration::from_millis(1000)).await; // 1 second
         ticker.next().await;
@@ -228,14 +327,7 @@ async fn temp(
                 info!("Internal temp: {=u16} ({} C)", v, celcius);
                 let mut text_lcd: String<TEXT_BUFFER_LEN> = String::new();
                 let _ = write(&mut text_lcd, format_args!("C: {:.2}", celcius));
-                //text.write_fmt(format_args!["C: {:.2}", celcius]).unwrap();
-                /*
-                {
-                    let mut t = TEXT_BUFFER.lock().await;
-                    t[0] = text;
-                }
-                display_text(&DISPLAY).await;
-                */
+
                 let mut lcd_unlocked = lcd.lock().await;
                 if let Some(lcd_ref) = lcd_unlocked.as_mut() {
                     lcd_ref.text_buffer[0] = text_lcd;
@@ -255,17 +347,12 @@ async fn volt(
     delay: Duration,
     mut pin: peripherals::PA1,
     lcd: &'static LcdType,
+    log_file: &'static LogFileType,
 ) {
     let mut ticker = Ticker::every(delay);
-    //let buf: &[u8] = &[1u8; 100];
-    //let mut buf_log = Vec::<&[u8], 100>::new();
-    //let mut buf_mv = Vec::<u16, 100>::new();
     static BUF_SIZE: usize = 300;
     let mut buf_mv = [0u8; BUF_SIZE];
     let mut buf_mv_idx = 0;
-    //static TEXT: StaticCell<String<TEXT_BUFFER_LEN>> = StaticCell::new();
-    //let text = TEXT.init(text);
-    //let mut text_log: String<TEXT_BUFFER_LEN> = String::new();
     loop {
         {
             let mut adc_unlocked = adc.lock().await;
@@ -279,13 +366,7 @@ async fn volt(
                 //let _ = text_lcd.write_fmt(format_args!["mV: {}", mv]);
                 let mut text_lcd: String<TEXT_BUFFER_LEN> = String::new();
                 let _ = write(&mut text_lcd, format_args!["mV: {}", mv]);
-                /*
-                {
-                    let mut t = TEXT_BUFFER.lock().await;
-                    t[1] = text_lcd;
-                }
-                display_text(&DISPLAY).await;
-                */
+
                 let mut lcd_unlocked = lcd.lock().await;
                 if let Some(lcd_ref) = lcd_unlocked.as_mut() {
                     lcd_ref.text_buffer[1] = text_lcd;
@@ -308,7 +389,12 @@ async fn volt(
                 if buf_mv_idx >= BUF_SIZE - 3 {
                     //for elem in buf_mv.iter() {
                     info!("buf_mv: {:?}", buf_mv);
-                    log_data(&LOG_FILE, &buf_mv).await;
+                    let mut log_file_unlocked = log_file.lock().await;
+                    if let Some(log_file_ref) = log_file_unlocked.as_mut() {
+                        log_file_ref.log_data(&buf_mv);
+                        log_file_ref.log_file.flush().unwrap();
+                    }
+                    //log_data(&LOG_FILE, &buf_mv).await;
                     //}
                     buf_mv_idx = 0;
                 } else {
@@ -324,14 +410,6 @@ async fn volt(
         }
         Timer::after(delay).await;
         //ticker.next().await;
-    }
-}
-
-async fn log_data(log_file: &'static LogFileType, data: &[u8]) {
-    let mut log_file_unlocked = log_file.lock().await;
-    if let Some(log_file_ref) = log_file_unlocked.as_mut() {
-        log_file_ref.write(data).expect("Error writing to log file");
-        log_file_ref.flush().unwrap();
     }
 }
 
@@ -366,8 +444,9 @@ async fn main(spawner: Spawner) {
     let p = embassy_stm32::init(config);
     //let p = embassy_stm32::init(Default::default());
 
-    info!("Time to start!");
+    info!("Program to start!");
 
+    // I2C
     let i2c = I2c::new(
         p.I2C1,
         p.PB6,
@@ -379,6 +458,7 @@ async fn main(spawner: Spawner) {
         Default::default(),
     );
 
+    // LCD initialization
     {
         *(LCD.lock().await) = Some(Lcd::new(i2c));
     }
@@ -393,74 +473,12 @@ async fn main(spawner: Spawner) {
     let spi_dev = ExclusiveDevice::new_no_delay(spi, cs).unwrap();
     //let spi_dev = ExclusiveDevice::new(spi, cs, Delay).unwrap();
 
-    let sdcard = SdCard::new(spi_dev, Delay);
-    info!("Card size is {} bytes", sdcard.num_bytes().unwrap());
-
-    // Now that the card is initialized, the SPI clock can go faster
-    let mut spi_cfg = spi::Config::default();
-    spi_cfg.frequency = Hertz(16_000_000); // 16MHz
-    sdcard
-        .spi(|dev| dev.bus_mut().set_config(&spi_cfg))
-        .unwrap();
-
-    // Now let's look for volumes (also known as partitions) on our block device.
-    // To do this we need a Volume Manager. It will take ownership of the block device.
-    let mut volume_mgr = embedded_sdmmc::VolumeManager::new(sdcard, DummyTimesource());
-
-    static VOL: StaticCell<
-        VolumeManager<
-            SdCard<ExclusiveDevice<Spi<'_, Async>, Output<'_>, NoDelay>, Delay>,
-            DummyTimesource,
-        >,
-    > = StaticCell::new();
-    let volume_mgr = VOL.init(volume_mgr);
-
-    // Try and access Volume 0 (i.e. the first partition).
-    // The volume object holds information about the filesystem on that volume.
-    let mut volume0 = volume_mgr
-        .open_volume(embedded_sdmmc::VolumeIdx(0))
-        .unwrap();
-    info!("Volume 0: {:?}", defmt::Debug2Format(&volume0));
-
-    static VOL0: StaticCell<
-        embedded_sdmmc::Volume<
-            '_,
-            SdCard<ExclusiveDevice<Spi<'_, Async>, Output<'_>, NoDelay>, Delay>,
-            DummyTimesource,
-            4,
-            4,
-            1,
-        >,
-    > = StaticCell::new();
-    let volume0 = VOL0.init(volume0);
-
-    // Open the root directory (mutably borrows from the volume).
-    let mut root_dir = volume0.open_root_dir().unwrap();
-
-    static ROOT: StaticCell<
-        embedded_sdmmc::Directory<
-            '_,
-            SdCard<ExclusiveDevice<Spi<'_, Async>, Output<'_>, NoDelay>, Delay>,
-            DummyTimesource,
-            4,
-            4,
-            1,
-        >,
-    > = StaticCell::new();
-    let root_dir = ROOT.init(root_dir);
-
-    let log_file = root_dir
-        .open_file_in_dir(
-            "RPM_DATA.CSV",
-            //embedded_sdmmc::Mode::ReadWriteCreateOrAppend,
-            embedded_sdmmc::Mode::ReadWriteCreateOrTruncate,
-        )
-        .unwrap();
+    // Log file & SD card initialization
     {
-        *(LOG_FILE.lock().await) = Some(log_file);
+        *(LOG_FILE.lock().await) = Some(LogFile::new(spi_dev, "RPM_DATA.CSV"));
     }
 
-    // ADC
+    // ADC initialization
     let mut adc = Adc::new(p.ADC1);
     adc.set_sample_time(SampleTime::CYCLES28_5);
     {
@@ -479,7 +497,8 @@ async fn main(spawner: Spawner) {
         vrefint_sample,
         Duration::from_nanos(dt),
         p.PA1,
-        &LCD
+        &LCD,
+        &LOG_FILE
     )));
     unwrap!(spawner.spawn(temp(
         &ADC,
@@ -489,5 +508,5 @@ async fn main(spawner: Spawner) {
         adc_temp,
         &LCD
     )));
-    unwrap!(spawner.spawn(tick_periodic()));
+    unwrap!(spawner.spawn(tick_periodic(&LOG_FILE)));
 }
