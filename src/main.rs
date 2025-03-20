@@ -14,7 +14,7 @@ use heapless::{String, Vec};
 
 use defmt::*;
 use embassy_executor::Spawner;
-use embassy_stm32::adc::{Adc, SampleTime, Temperature};
+use embassy_stm32::adc::{Adc, SampleTime, Temperature, Vref};
 use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::i2c::I2c;
 use embassy_stm32::peripherals::{ADC1, I2C1};
@@ -60,7 +60,7 @@ fn convert_to_millivolts(vrefint_sample: u16) -> impl Fn(u16) -> u16 {
 // Task that ticks periodically
 async fn tick_periodic(log_file: &'static LogFileType) -> ! {
     let mut counter: u32 = 0;
-    //let mut ticker = Ticker::every(Duration::from_secs(1));
+    let mut ticker = Ticker::every(Duration::from_secs(1));
     loop {
         // SIGNAL.signal(counter);
         // counter = counter.wrapping_add(1);
@@ -77,8 +77,8 @@ async fn tick_periodic(log_file: &'static LogFileType) -> ! {
             }
         }
 
-        Timer::after(Duration::from_millis(1000)).await; // 1 second
-                                                         //ticker.next().await;
+        //Timer::after(Duration::from_millis(1000)).await; // 1 second
+        ticker.next().await;
 
         counter += 1;
     }
@@ -274,9 +274,18 @@ async fn main(spawner: Spawner) {
         *(ADC.lock().await) = Some(adc);
     }
 
-    let mut vrefint = ADC.lock().await.as_mut().unwrap().enable_vref();
-    let vrefint_sample = ADC.lock().await.as_mut().unwrap().read(&mut vrefint).await;
-    let adc_temp = ADC.lock().await.as_mut().unwrap().enable_temperature();
+    let mut vrefint: Vref;
+    let mut vrefint_sample: u16 = 0;
+    let mut adc_temp: Temperature = Temperature {};
+
+    {
+        let mut adc_unlocked = ADC.lock().await;
+        if let Some(adc_ref) = adc_unlocked.as_mut() {
+            vrefint = adc_ref.enable_vref();
+            vrefint_sample = adc_ref.read(&mut vrefint).await;
+            adc_temp = adc_ref.enable_temperature();
+        }
+    }
 
     let dt = 100 * 1_000_000;
     let k = 1.003;
