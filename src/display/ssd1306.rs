@@ -13,7 +13,7 @@ use heapless::{String, Vec};
 use ssd1306::mode::BufferedGraphicsMode;
 use ssd1306::{prelude::*, I2CDisplayInterface, Ssd1306};
 
-pub const TEXT_BUFFER_LEN: usize = 10;
+pub const TEXT_BUFFER_LEN: usize = 16;
 
 const TEXT_STYLE: MonoTextStyle<'static, BinaryColor> = MonoTextStyleBuilder::new()
     .font(&FONT_10X20)

@@ -29,7 +29,8 @@ impl embedded_sdmmc::TimeSource for DummyTimesource {
 pub struct LogFile {
     pub log_file: File<
         'static,
-        SdCard<ExclusiveDevice<Spi<'static, Async>, Output<'static>, NoDelay>, Delay>,
+        //SdCard<ExclusiveDevice<Spi<'static, Async>, Output<'static>, NoDelay>, Delay>,
+        SdCard<ExclusiveDevice<Spi<'static, Async>, Output<'static>, Delay>, Delay>,
         DummyTimesource,
         4,
         4,
@@ -39,7 +40,8 @@ pub struct LogFile {
 
 impl LogFile {
     pub fn new(
-        spi_dev: ExclusiveDevice<Spi<'static, Async>, Output<'static>, NoDelay>,
+        //spi_dev: ExclusiveDevice<Spi<'static, Async>, Output<'static>, NoDelay>,
+        spi_dev: ExclusiveDevice<Spi<'static, Async>, Output<'static>, Delay>,
         file_name: &str,
     ) -> Self {
         let sdcard = SdCard::new(spi_dev, Delay);
@@ -47,7 +49,7 @@ impl LogFile {
 
         // Now that the card is initialized, the SPI clock can go faster
         let mut spi_cfg = spi::Config::default();
-        spi_cfg.frequency = Hertz(16_000_000); // 16MHz
+        spi_cfg.frequency = Hertz(1_000_000); // 16MHz
         sdcard
             .spi(|dev| dev.bus_mut().set_config(&spi_cfg))
             .unwrap();
@@ -58,7 +60,8 @@ impl LogFile {
 
         static VOL: StaticCell<
             VolumeManager<
-                SdCard<ExclusiveDevice<Spi<'_, Async>, Output<'_>, NoDelay>, Delay>,
+                //SdCard<ExclusiveDevice<Spi<'_, Async>, Output<'_>, NoDelay>, Delay>,
+                SdCard<ExclusiveDevice<Spi<'_, Async>, Output<'_>, Delay>, Delay>,
                 DummyTimesource,
             >,
         > = StaticCell::new();
@@ -74,7 +77,8 @@ impl LogFile {
         static VOL0: StaticCell<
             embedded_sdmmc::Volume<
                 '_,
-                SdCard<ExclusiveDevice<Spi<'_, Async>, Output<'_>, NoDelay>, Delay>,
+                //SdCard<ExclusiveDevice<Spi<'_, Async>, Output<'_>, NoDelay>, Delay>,
+                SdCard<ExclusiveDevice<Spi<'_, Async>, Output<'_>, Delay>, Delay>,
                 DummyTimesource,
                 4,
                 4,
@@ -89,7 +93,8 @@ impl LogFile {
         static ROOT: StaticCell<
             embedded_sdmmc::Directory<
                 '_,
-                SdCard<ExclusiveDevice<Spi<'_, Async>, Output<'_>, NoDelay>, Delay>,
+                //SdCard<ExclusiveDevice<Spi<'_, Async>, Output<'_>, NoDelay>, Delay>,
+                SdCard<ExclusiveDevice<Spi<'_, Async>, Output<'_>, Delay>, Delay>,
                 DummyTimesource,
                 4,
                 4,
@@ -109,6 +114,14 @@ impl LogFile {
         self.log_file
             .write(data)
             .expect("Error writing to log file");
+        self.log_file.flush().unwrap();
+    }
+
+    pub async fn write(&mut self, data: &[u8]) {
+        self.log_file.write(data).unwrap();
+    }
+
+    pub async fn flush(&mut self) {
         self.log_file.flush().unwrap();
     }
 }
