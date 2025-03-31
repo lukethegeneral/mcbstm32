@@ -49,7 +49,7 @@ impl LogFile {
 
         // Now that the card is initialized, the SPI clock can go faster
         let mut spi_cfg = spi::Config::default();
-        spi_cfg.frequency = Hertz(1_000_000); // 16MHz
+        spi_cfg.frequency = Hertz(36_000_000); // 16MHz
         sdcard
             .spi(|dev| dev.bus_mut().set_config(&spi_cfg))
             .unwrap();

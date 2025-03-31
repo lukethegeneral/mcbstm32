@@ -11,8 +11,7 @@ use embassy_stm32::rcc::mux::ClockMux;
 //use embassy_stm32::timer::low_level::Timer;
 use log::LogFile;
 
-use core::fmt::write;
-use core::ops::Deref;
+use core::fmt::{write, Write};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use heapless::{String, Vec};
@@ -22,6 +21,7 @@ use embassy_executor::Spawner;
 use embassy_stm32::adc::{Adc, AdcChannel, AnyAdcChannel, RxDma, SampleTime, Temperature, Vref};
 use embassy_stm32::gpio::{Flex, Level, Output, Speed};
 use embassy_stm32::i2c::I2c;
+//use embassy_stm32::pac;
 use embassy_stm32::peripherals::{ADC1, DMA1, DMA1_CH1, DMA1_CH2, I2C1, TIM1};
 use embassy_stm32::spi::Spi;
 use embassy_stm32::time::{mhz, Hertz};
@@ -58,11 +58,24 @@ fn convert_to_millivolts(vrefint_sample: u16) -> impl Fn(u16) -> u16 {
         // 5.3.4 Embedded reference voltage
         const VREFINT_MV: u32 = 1200; // mV
 
-        info!("Vrefint_sample[ctm]: {} - {}", vrefint_sample, sample);
+        //    info!("Vrefint_sample[ctm]: {} - {}", vrefint_sample, sample);
         (u32::from(sample) * VREFINT_MV / u32::from(vrefint_sample)) as u16
     };
 
     convert_to_millivolts
+}
+
+fn from_u16(from: &mut [u16]) -> &[u8] {
+    let ptr: *const [u8] = from as *const [u16] as _;
+    let len = from.len().checked_mul(2).unwrap();
+
+    if len > 0 && from[0].to_ne_bytes() != from[0].to_be_bytes() {
+        for byte in from.iter_mut() {
+            *byte = u16::from_ne_bytes((*byte).to_be_bytes());
+        }
+    }
+
+    unsafe { core::slice::from_raw_parts(ptr as _, len) }
 }
 
 #[embassy_executor::task]
@@ -79,7 +92,8 @@ async fn tick_periodic(log_file: &'static LogFileType) -> ! {
         let elapsed = (toc - tic).as_millis();
         info!("tick! {} {}", counter, elapsed);
         let mut text: String<15> = String::new();
-        let _ = write(&mut text, format_args!("\n[{}][{}]\n", counter, elapsed));
+        //let _ = write(&mut text, format_args!("\n[{}][{}]\n", counter, elapsed));
+        core::write!(&mut text, "\n[{}][{}]\n", counter, elapsed).unwrap();
 
         {
             let mut log_file_unlocked = log_file.lock().await;
@@ -239,22 +253,6 @@ async fn volt(
                     lcd_ref.display_text().await;
                 }
 
-                // Write to buffer
-                /*
-                let mv_bytes = mv.to_be_bytes();
-                buf_mv[buf_mv_idx] = mv_bytes[0];
-                buf_mv[buf_mv_idx + 1] = mv_bytes[1];
-                buf_mv[buf_mv_idx + 2] = ',' as u8;
-                info!(
-                    "index[{}] mv: {} buf: 0x{:x} 0x{:x} 0x{:x}",
-                    buf_mv_idx,
-                    mv,
-                    buf_mv[buf_mv_idx],
-                    buf_mv[buf_mv_idx + 1],
-                    buf_mv[buf_mv_idx + 2],
-                );
-                info!("buf_mv: {:?}", buf_mv);
-                */
                 let mut text_log: String<5> = String::new();
                 let _ = write(&mut text_log, format_args!["{},", mv]);
                 {
@@ -264,21 +262,6 @@ async fn volt(
                         log_file_ref.write(&text_log.as_bytes()).await;
                     }
                 }
-                /*
-                if buf_mv_idx >= BUF_SIZE - 3 {
-                    //for elem in buf_mv.iter() {
-                    info!("buf_mv: {:?}", buf_mv);
-                    let mut log_file_unlocked = log_file.lock().await;
-                    if let Some(log_file_ref) = log_file_unlocked.as_mut() {
-                        log_file_ref.log_data(&buf_mv).await;
-                        // log_file_ref.log_file.flush().unwrap();
-                    }
-                    //}
-                    buf_mv_idx = 0;
-                } else {
-                    buf_mv_idx += 3;
-                }
-                */
             }
         }
         Timer::after(delay).await;
@@ -336,23 +319,22 @@ async fn main(spawner: Spawner) {
     );
 
     info!("Program start!");
-    /*
-        // I2C
-        let i2c = I2c::new(
-            p.I2C1,
-            p.PB6,
-            p.PB7,
-            Irqs,
-            p.DMA1_CH6,
-            p.DMA1_CH7,
-            Hertz::khz(400),
-            Default::default(),
-        );
+    // I2C
+    let i2c = I2c::new(
+        p.I2C1,
+        p.PB6,
+        p.PB7,
+        Irqs,
+        p.DMA1_CH6,
+        p.DMA1_CH7,
+        Hertz::khz(400),
+        Default::default(),
+    );
 
-        // LCD initialization
-        {
-            *(LCD.lock().await) = Some(Lcd::new(i2c));
-        }
+    // LCD initialization
+    {
+        *(LCD.lock().await) = Some(Lcd::new(i2c));
+    }
 
     // SPI
     // SPI clock needs to be running at <= 400kHz during initialization
@@ -368,35 +350,11 @@ async fn main(spawner: Spawner) {
     {
         *(LOG_FILE.lock().await) = Some(LogFile::new(spi_dev, LOG_FILE_NAME));
     }
-    */
 
     // ADC initialization
     let mut adc = Adc::new(p.ADC1);
 
-    // 16Mhz ->
-    //       1.5 -> vrefint_sample = 1500
-    //      13.5 -> vrefint_sample = 1492
-    //      28.5 -> vrefint_sample = 1491
-    // 24Mhz ->
-    //       1.5 -> vrefint_sample = 1450
-    //      13.5 -> vrefint_sample = 1495
-    //      28.5 -> vrefint_sample = 1491
-    // 32Mhz ->
-    //       1.5 -> vrefint_sample = 1169
-    //      13.5 -> vrefint_sample = 1499
-    // 48Mhz ->
-    //       1.5 -> vrefint_sample = 505
-    //      13.5 -> vrefint_sample = 1121
-    // 56Mhz ->
-    //       1.5 -> vrefint_sample = 358
-    //      13.5 -> vrefint_sample = 930
-    // 72Mhz ->
-    //       1.5 -> vrefint_sample = 84
-    //       7.5 -> vrefint_sample = 452
     adc.set_sample_time(SampleTime::CYCLES41_5);
-    //info!("Sample time: {}", SampleTime::from_bits(0) as u32);
-    //adc.set_sample_time(adc.sample_time_for_us(1));
-    //info!("Sample time fo us: {}", adc.sample_time_for_us(5) as u32);
 
     //Duration::from_millis(1000);
     let adc_pac = embassy_stm32::pac::ADC1;
@@ -424,7 +382,7 @@ async fn main(spawner: Spawner) {
     );
 
     /////
-    //let a = embassy_stm32::dma::ReadableRinddgBuffer;
+    /*
     let tim = embassy_stm32::timer::low_level::Timer::new(p.TIM2);
     let timer_registers = tim.regs_gp16();
     timer_registers
@@ -438,19 +396,8 @@ async fn main(spawner: Spawner) {
     });
 
     tim.set_frequency(Hertz(100_000));
-    /*
-    t.enable_update_dma(true);
-    t.set_cc_dma_enable_state(embassy_stm32::timer::Channel::Ch1, true);
-    info!(
-        "Timer: {} {} {} {}",
-        t.get_frequency(),
-        t.get_clock_frequency(),
-        t.get_update_dma_state(),
-        t.get_cc_dma_enable_state(embassy_stm32::timer::Channel::Ch1),
-    );
     */
 
-    //let mut dma_buf = [0u16; 1024];
     let options = embassy_stm32::dma::TransferOptions::default();
     let adc_dma_transfer = |adc_dma_buf| unsafe {
         let dma_ch = p.DMA1_CH1.clone_unchecked();
@@ -492,10 +439,14 @@ async fn main(spawner: Spawner) {
     // Set adon to start conversion
     adc_pac.cr2().modify(|w| w.set_adon(true));
     adc_pac.cr2().modify(|reg| reg.set_tsvrefe(true)); //adc.enable_vref() for vref & temp
+
+    // Assign channels to conversion
     const PIN_CHANNEL: u8 = 1;
     adc_pac.sqr3().modify(|w| w.set_sq(0, PIN_CHANNEL));
     adc_pac.sqr3().modify(|w| w.set_sq(1, 16));
     adc_pac.sqr3().modify(|w| w.set_sq(2, 17));
+
+    // Set sample times
     adc_pac
         .smpr2()
         .modify(|w| w.set_smp(PIN_CHANNEL as usize, adc::SampleTime::CYCLES41_5));
@@ -521,9 +472,8 @@ async fn main(spawner: Spawner) {
 
         const NUM_CHANNELS: usize = 3;
         const NUM_SAMPLES: usize = 1000;
+        let mut ticker = Ticker::every(Duration::from_secs(1));
         loop {
-            // TODO: I'd rather this be local, but Transfer requires the buffer have the same lifetime as the DMA channel for some reason.
-            //static mut ADC_BUF: [u16; NUM_SAMPLES] = [0u16; NUM_SAMPLES];
             static mut ADC_BUF: [u16; NUM_SAMPLES * NUM_CHANNELS] =
                 [0u16; { NUM_SAMPLES * NUM_CHANNELS }];
 
@@ -533,12 +483,38 @@ async fn main(spawner: Spawner) {
             adc_transfer.await;
             let adc_buf = unsafe { &ADC_BUF[..] };
             info!("DMA transfer: {:?}", adc_buf[..NUM_CHANNELS * 3]);
+            /*
             info!(
                 "DMA transfer: {} {} {}",
                 adc_buf[0],
                 convert_to_celcius(adc_buf[2], adc_buf[1]),
                 adc_buf[2],
             );
+            */
+            let celcius = convert_to_celcius(adc_buf[2], adc_buf[1]);
+            let mv = adc_buf[0];
+            // Write to LCD
+            let mut text_lcd_line_1: String<TEXT_BUFFER_LEN> = String::new();
+            core::write!(&mut text_lcd_line_1, "C: {:.2}", celcius).unwrap();
+
+            let mut text_lcd_line_2: String<TEXT_BUFFER_LEN> = String::new();
+            core::write!(&mut text_lcd_line_2, "mV: {}", mv).unwrap();
+
+            let lcd_unlocked = &mut LCD.lock().await;
+            if let Some(lcd_ref) = lcd_unlocked.as_mut() {
+                lcd_ref.text_buffer[0] = text_lcd_line_1;
+                lcd_ref.text_buffer[1] = text_lcd_line_2;
+                lcd_ref.display_text().await;
+            }
+
+            // Write to file
+            {
+                let log_file_unlocked = &mut LOG_FILE.lock().await;
+                if let Some(log_file_ref) = log_file_unlocked.as_mut() {
+                    log_file_ref.log_data(bytemuck::cast_slice(adc_buf)).await;
+                }
+            }
+            ticker.next().await;
         }
     };
     fut_main.await;
@@ -549,22 +525,7 @@ async fn main(spawner: Spawner) {
         adc_pac.cr2().read().adon()
     );
 
-    /*
-    let mut ring_buffer = unsafe {
-        ReadableRingBuffer::new(dma1, req, peri_addr as *mut u8, &mut dma_buffer, options)
-    };
-    ring_buffer.start();
-    let mut buf = [0u8; 1];
-    let size = ring_buffer.read(&mut buf).unwrap();
-    info!(
-        "DMA: {} {} {} {}",
-        ring_buffer.is_running(),
-        ring_buffer.len().unwrap(),
-        size,
-        buf
-    );
-    */
-    /////
+    ///////
 
     {
         *(ADC.lock().await) = Some(adc);
@@ -579,7 +540,6 @@ async fn main(spawner: Spawner) {
         if let Some(adc_ref) = adc_unlocked.as_mut() {
             info!("[1] smpr1= {}", adc_pac.smpr1().read().0.to_be_bytes());
             vrefint = adc_ref.enable_vref();
-            info!("[2] smpr1= {}", adc_pac.smpr1().read().0.to_be_bytes());
             info!(
                 "dma ->\n {} {}",
                 adc_pac.cr2().read().dma(),
@@ -589,9 +549,7 @@ async fn main(spawner: Spawner) {
             info!("[3] smpr1= {}", adc_pac.smpr1().read().0.to_be_bytes());
             let mv = convert_to_millivolts(vrefint_sample)(vrefint_sample);
             info!("Vrefint_sample: {} - {}", vrefint_sample, mv);
-            info!("[4] smpr1= {}", adc_pac.smpr1().read().0.to_be_bytes());
             adc_temp = adc_ref.enable_temperature();
-            info!("[5] smpr1= {}", adc_pac.smpr1().read().0.to_be_bytes());
         }
     }
     //defmt::panic!();
@@ -618,8 +576,8 @@ async fn main(spawner: Spawner) {
         &LCD
     )));
     */
+    //    unwrap!(spawner.spawn(tick_periodic(&LOG_FILE)));
     /*
-    unwrap!(spawner.spawn(tick_periodic(&LOG_FILE)));
     unwrap!(spawner.spawn(adc_data(
         &ADC,
         p.PA1,
