@@ -21,16 +21,27 @@ embedded-io = "0.6.1"
 embedded-io-async = "0.6.1"
 embedded-storage = "0.3.1"
 
-cortex-m-rt = "0.7.3"
+cortex-m-rt = "0.7.5"
 
-ssd1306 = "0.9.0"
+embedded-sdmmc = { version = "0.8.1" }
+#embedded-sdmmc = { version = "0.8.0", default-features = false, features = [
+#	"defmt-log",
+#] }
+ssd1306 = "0.10.0"
 embedded-graphics = "0.8.1"
+embedded-hal-bus = { version = "0.3.0", features = ["async"] }
+heapless = { version = "0.8.0", default-features = false }
+static_cell = "2.1"
+bytemuck = "1.22.0"
 
-embassy-stm32 = { version = "0.2.0", features = [
+stm32-metapac = "16"
+
+embassy-stm32 = { version = "*", features = [
 	"defmt",
 	"stm32f103rb",
 	"unstable-pac",
 	"memory-x",
+	#"time-driver-tim4",
 	"time-driver-any",
 ] }
 embassy-executor = { version = "0.7", features = [
@@ -44,14 +55,20 @@ embassy-sync = { version = "0.6" }
 embassy-time = { version = "0.4", features = [
 	"defmt",
 	"defmt-timestamp-uptime",
+	"tick-hz-32_768",
 ] }
-cortex-m = { version = "0.7.6", features = ["critical-section-single-core"] }
+cortex-m = { version = "0.7.7", features = ["critical-section-single-core"] }
 [profile.release]
 debug = 2
 lto = true
-opt-level = 'z'
+opt-level = "s"
 
 [profile.dev]
 debug = 2
 lto = true
-opt-level = "z"
+opt-level = "s"
+incremental = false
+codegen-units = 1
+
+#[profile.release.build-override]
+#opt-level = 2
