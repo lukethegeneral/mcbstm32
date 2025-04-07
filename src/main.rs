@@ -14,6 +14,7 @@ use static_cell::{ConstStaticCell, StaticCell};
 use stm32_metapac::bdma::{regs, Dma};
 
 use core::fmt::{write, Write};
+use core::task;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use heapless::{String, Vec};
@@ -252,6 +253,7 @@ fn adc_dma_transfer(
 
         let dma_pac = embassy_stm32::pac::DMA1;
         let adc_pac = embassy_stm32::pac::ADC1;
+        /*
         info!(
             "[before] mem2mem {} circ {} msize {} psize {} dir {} en {} ndt {}",
             dma_pac.ch(0).cr().read().mem2mem() as u8,
@@ -262,29 +264,32 @@ fn adc_dma_transfer(
             dma_pac.ch(0).cr().read().en() as u8,
             dma_pac.ch(0).ndtr().read().ndt(),
         );
+        */
         info!(
-            "ADC dma: {} {}",
-            adc_pac.cr2().read().dma(),
-            adc_pac.cr2().read().adon()
+            "ADC befor: sqr3_sq0 {} sqr3_sq1 {} sqr3_sq2 {}",
+            adc_pac.sqr3().read().sq(0),
+            adc_pac.sqr3().read().sq(1),
+            adc_pac.sqr3().read().sq(2),
         );
+        adc_pac.sqr3().modify(|w| w.set_sq(0, 1));
+        adc_pac.sqr3().modify(|w| w.set_sq(1, 16));
+        adc_pac.sqr3().modify(|w| w.set_sq(2, 17));
+        info!(
+            "ADC after: sqr3_sq0 {} sqr3_sq1 {} sqr3_sq2 {}",
+            adc_pac.sqr3().read().sq(0),
+            adc_pac.sqr3().read().sq(1),
+            adc_pac.sqr3().read().sq(2),
+        );
+
         let dma_transfer = Transfer::new_read(
             dma_ch.clone_unchecked(),
             req,
-            //embassy_stm32::pac::ADC1.dr().as_ptr() as *mut u16, //0x40012400
-            adc_pac.dr().as_ptr() as *mut u16,
+            pac::ADC1.dr().as_ptr() as *mut u16, //0x40012400
+            //adc_pac.dr().as_ptr() as *mut u16,
             adc_dma_buf,
             options,
         );
-        info!(
-            "[after ] mem2mem {} circ {} msize {} psize {} dir {} en {} ndt {}",
-            dma_pac.ch(0).cr().read().mem2mem() as u8,
-            dma_pac.ch(0).cr().read().circ() as u8,
-            dma_pac.ch(0).cr().read().msize().to_bits(),
-            dma_pac.ch(0).cr().read().psize().to_bits(),
-            dma_pac.ch(0).cr().read().dir().to_bits(),
-            dma_pac.ch(0).cr().read().en() as u8,
-            dma_pac.ch(0).ndtr().read().ndt(),
-        );
+
         dma_transfer
     }
 }
@@ -320,7 +325,7 @@ async fn transfer_dma(
     //pa1.set_as_analog();
 
     // Assign channels to conversion
-    const PIN_CHANNEL: u8 = 1;
+    const PIN_CHANNEL: u8 = 0x01;
     adc_pac.sqr3().modify(|w| w.set_sq(0, PIN_CHANNEL));
     adc_pac.sqr3().modify(|w| w.set_sq(1, 16));
     adc_pac.sqr3().modify(|w| w.set_sq(2, 17));
@@ -349,12 +354,10 @@ async fn transfer_dma(
     adc_pac.cr2().modify(|w| w.set_adon(true));
     adc_pac.cr2().modify(|w| w.set_swstart(true));
 
-    info!("Transfer DMA task started");
     const NUM_CHANNELS: usize = 3;
     const NUM_SAMPLES: usize = 100;
     let mut ticker = Ticker::every(Duration::from_millis(100));
     loop {
-        info!("Transfer DMA task loop");
         static mut ADC_BUF: [u16; NUM_SAMPLES * NUM_CHANNELS] =
             [0u16; { NUM_SAMPLES * NUM_CHANNELS }];
         let adc_buf = unsafe { &mut ADC_BUF[..] };
@@ -363,19 +366,10 @@ async fn transfer_dma(
         // wait for all of the samples to be taken
         adc_transfer.await;
 
-        info!("DMA transfer done");
         let adc_buf = unsafe { &ADC_BUF[..] };
         info!("DMA transfer: {:?}", adc_buf[..NUM_CHANNELS * 3]);
         //info!("DMA transfer: {:?}", adc_buf[..]);
 
-        /*
-        info!(
-            "DMA transfer: {} {} {}",
-            adc_buf[0],
-            convert_to_celcius(adc_buf[2], adc_buf[1]),
-            adc_buf[2],
-        );
-        */
         let convert_to_celcius = |vrefint_sample, v_sense| {
             // From http://www.st.com/resource/en/datasheet/CD00161566.pdf
             // Temperature sensor characteristics
@@ -591,113 +585,6 @@ async fn main(spawner: Spawner) {
     tim.set_frequency(Hertz(100_000));
     */
 
-    // DMA initialization
-    //let dma_pac = embassy_stm32::pac::DMA1;
-
-    //    dma_pac.ch(0).cr().modify(|w| w.set_msize(0b01.into()));
-    //    dma_pac.ch(0).cr().modify(|w| w.set_psize(0b01.into()));
-    //    dma_pac.ch(0).cr().modify(|w| w.set_mem2mem(true));
-    //    dma_pac.ch(0).cr().modify(|w| w.set_circ(true));
-    //    dma_pac.ch(0).cr().modify(|w| w.set_en(true));
-
-    /*
-        let adc_dma_transfer = |adc_dma_buf| unsafe {
-            unsafe {
-                //let dma_ch = dma_ch.clone_unchecked();
-                let dma_ch = p.DMA1_CH1.clone_unchecked();
-                //let dma_ch = embassy_stm32::Peripheral::clone_unchecked(&p.DMA1_CH1);
-                //let req = embassy_stm32::adc::RxDma::request(&dma_ch);
-                let req = embassy_stm32::adc::RxDma::request(&dma_ch);
-                let mut options = embassy_stm32::dma::TransferOptions::default();
-
-                //options.circular = true;
-
-                // dma_pac.ch(0).cr().modify(|w| w.set_msize(0b01.into()));
-                // dma_pac.ch(0).cr().modify(|w| w.set_psize(0b01.into()));
-                // dma_pac.ch(0).ndtr().modify(|w| w.set_ndt(3));
-                // dma_pac.ch(0).cr().modify(|w| w.set_circ(true));
-                // dma_pac.ch(0).cr().modify(|w| w.set_en(true));
-
-                /*
-                info!(
-                    "[before] mem2mem {} circ {} msize {} psize {} dir {} en {} ndt {}",
-                    dma_pac.ch(0).cr().read().mem2mem() as u8,
-                    dma_pac.ch(0).cr().read().circ() as u8,
-                    dma_pac.ch(0).cr().read().msize().to_bits(),
-                    dma_pac.ch(0).cr().read().psize().to_bits(),
-                    dma_pac.ch(0).cr().read().dir().to_bits(),
-                    dma_pac.ch(0).cr().read().en() as u8,
-                    dma_pac.ch(0).ndtr().read().ndt(),
-                );
-                */
-
-                let dma_transfer = Transfer::new_read(
-                    dma_ch,
-                    req,
-                    embassy_stm32::pac::ADC1.dr().as_ptr() as *mut u16, //0x40012400
-                    //adc_pac.dr().as_ptr() as *mut u16,
-                    adc_dma_buf,
-                    options,
-                );
-                dma_transfer
-            }
-        };
-    */
-
-    // just need this to power on ADC
-    //let _adc = adc::Adc::new(p.ADC1);
-    /*
-        adc_pac.cr1().modify(|w| {
-            w.set_scan(true); // Scan mode
-            w.set_eocie(true); // Interrupt enable for EOC
-        });
-
-        adc_pac.cr2().modify(|w| {
-            w.set_dma(true); // Direct memory access mode (for single ADC mode)
-            w.set_cont(true); // Continuous conversion
-        });
-
-        // Configure channel and sampling time
-        adc_pac.sqr1().modify(|w| w.set_l(2)); // 3 conversion.
-
-        // set the GPIO pin to analog mode
-        // let dma_gpio_a = embassy_stm32::pac::GPIOA;
-        // dma_gpio_a.cr(1).modify(|w| w.set_mode(0, 0b00.into()));
-        // TODO: this may not be necessary
-        //let mut pa1 = Flex::new(p.PA1);
-        //pa1.set_as_analog();
-
-        // Assign channels to conversion
-        const PIN_CHANNEL: u8 = 1;
-        adc_pac.sqr3().modify(|w| w.set_sq(0, PIN_CHANNEL));
-        adc_pac.sqr3().modify(|w| w.set_sq(1, 16));
-        adc_pac.sqr3().modify(|w| w.set_sq(2, 17));
-
-        // Set sample times
-        adc_pac
-            .smpr2()
-            .modify(|w| w.set_smp(PIN_CHANNEL as usize, adc::SampleTime::CYCLES41_5));
-        adc_pac
-            .smpr1()
-            .modify(|w| w.set_smp(6 as usize, adc::SampleTime::CYCLES239_5));
-        adc_pac
-            .smpr1()
-            .modify(|w| w.set_smp(7 as usize, adc::SampleTime::CYCLES239_5));
-
-        //adc.enable_vref() for vref & temp
-        adc_pac.cr2().modify(|reg| reg.set_tsvrefe(true));
-
-        /*Power up the adc*/
-        adc_pac.cr2().modify(|w| w.set_adon(true));
-
-        /*Wait a little bit*/
-        Timer::after(Duration::from_millis(100)).await;
-
-        // Set adon to start conversion
-        adc_pac.cr2().modify(|w| w.set_adon(true));
-        adc_pac.cr2().modify(|w| w.set_swstart(true));
-    */
-
     //let dma_ch = unsafe { p.DMA1_CH1.clone_unchecked() };
     let dma_ch = p.DMA1_CH1;
     static DMA_CH: StaticCell<DMA1_CH1> = StaticCell::new();
@@ -712,6 +599,7 @@ async fn main(spawner: Spawner) {
     //    }
     unwrap!(spawner.spawn(transfer_dma(dma_ch, &adc_dma_transfer)));
 
+    // fake task to keep the program running
     let fut = async {};
     fut.await;
 
