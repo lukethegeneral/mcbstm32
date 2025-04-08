@@ -304,9 +304,10 @@ async fn transfer_dma(
 ) {
     let dma_pac = embassy_stm32::pac::DMA1;
     let adc_pac = embassy_stm32::pac::ADC1;
+
     adc_pac.cr1().modify(|w| {
         w.set_scan(true); // Scan mode
-        w.set_eocie(true); // Interrupt enable for EOC
+                          // w.set_eocie(true); // Interrupt enable for EOC
     });
 
     adc_pac.cr2().modify(|w| {
@@ -540,33 +541,35 @@ async fn main(spawner: Spawner) {
 
     // ADC initialization
     let mut adc = Adc::new(p.ADC1);
-
-    adc.set_sample_time(SampleTime::CYCLES41_5);
-
-    //Duration::from_millis(1000);
     let adc_pac = embassy_stm32::pac::ADC1;
-    //let adc_pac = pac::ADC1;
-    info!("before smpr1= {}", adc_pac.smpr1().read().0.to_be_bytes());
-    adc_pac
-        .smpr1()
-        .modify(|reg| reg.set_smp(6, SampleTime::CYCLES41_5));
-    adc_pac
-        .smpr1()
-        .modify(|reg| reg.set_smp(7, SampleTime::CYCLES41_5));
-    info!(
-        "smp_6: {}, smp_7: {}",
-        adc_pac.smpr1().read().smp(6).to_bits(),
-        adc_pac.smpr1().read().smp(7).to_bits(),
-    );
-    let smpr1 = adc_pac.smpr1().read().0.to_be_bytes();
-    let sr = adc_pac.sr().read().0.to_be_bytes();
-    let cr1 = adc_pac.cr1().read().0.to_be_bytes();
-    let cr2 = adc_pac.cr2().read().0.to_be_bytes();
-    let dma = adc_pac.cr2().read().dma();
-    info!(
-        "ADC:\n smpr1 = {}\n sr = {}\n cr1 = {}\n cr2 = {}\n dma = {}",
-        smpr1, sr, cr1, cr2, dma
-    );
+
+    /*
+        adc.set_sample_time(SampleTime::CYCLES41_5);
+
+        //Duration::from_millis(1000);
+        //let adc_pac = pac::ADC1;
+        info!("before smpr1= {}", adc_pac.smpr1().read().0.to_be_bytes());
+        adc_pac
+            .smpr1()
+            .modify(|reg| reg.set_smp(6, SampleTime::CYCLES41_5));
+        adc_pac
+            .smpr1()
+            .modify(|reg| reg.set_smp(7, SampleTime::CYCLES41_5));
+        info!(
+            "smp_6: {}, smp_7: {}",
+            adc_pac.smpr1().read().smp(6).to_bits(),
+            adc_pac.smpr1().read().smp(7).to_bits(),
+        );
+        let smpr1 = adc_pac.smpr1().read().0.to_be_bytes();
+        let sr = adc_pac.sr().read().0.to_be_bytes();
+        let cr1 = adc_pac.cr1().read().0.to_be_bytes();
+        let cr2 = adc_pac.cr2().read().0.to_be_bytes();
+        let dma = adc_pac.cr2().read().dma();
+        info!(
+            "ADC:\n smpr1 = {}\n sr = {}\n cr1 = {}\n cr2 = {}\n dma = {}",
+            smpr1, sr, cr1, cr2, dma
+        );
+    */
 
     /////
     /*
@@ -602,79 +605,6 @@ async fn main(spawner: Spawner) {
     // fake task to keep the program running
     let fut = async {};
     fut.await;
-
-    //loop {}
-    /*
-        let fut_main = async {
-            let convert_to_celcius = |vrefint_sample, v_sense| {
-                // From http://www.st.com/resource/en/datasheet/CD00161566.pdf
-                // Temperature sensor characteristics
-                const V25: i32 = 1430; // mV
-                const AVG_SLOPE: f32 = 4.3; // mV/C
-
-                let sample_mv = convert_to_millivolts(vrefint_sample)(v_sense) as i32;
-
-                //((sample_mv - V25) as f32 / AVG_SLOPE + 25.0) as u32
-                (((V25 - sample_mv) as f32 / AVG_SLOPE) + 25.0) as u32
-            };
-
-            const NUM_CHANNELS: usize = 3;
-            const NUM_SAMPLES: usize = 100;
-            let mut ticker = Ticker::every(Duration::from_millis(100));
-            loop {
-                // Set adon to start conversion
-                //adc_pac.cr2().modify(|w| w.set_adon(true));
-                //adc_pac.cr2().modify(|w| w.set_swstart(true));
-
-                static mut ADC_BUF: [u16; NUM_SAMPLES * NUM_CHANNELS] =
-                    [0u16; { NUM_SAMPLES * NUM_CHANNELS }];
-                let adc_buf = unsafe { &mut ADC_BUF[..] };
-
-                let adc_transfer = adc_dma_transfer(adc_buf);
-                // wait for all of the samples to be taken
-                adc_transfer.await;
-
-                let adc_buf = unsafe { &ADC_BUF[..] };
-                info!("DMA transfer: {:?}", adc_buf[..NUM_CHANNELS * 3]);
-                //info!("DMA transfer: {:?}", adc_buf[..]);
-
-                /*
-                info!(
-                    "DMA transfer: {} {} {}",
-                    adc_buf[0],
-                    convert_to_celcius(adc_buf[2], adc_buf[1]),
-                    adc_buf[2],
-                );
-                */
-                let celcius = convert_to_celcius(adc_buf[2], adc_buf[1]);
-                let mv = adc_buf[0];
-                // Write to LCD
-                let mut text_lcd_line_1: String<TEXT_BUFFER_LEN> = String::new();
-                core::write!(&mut text_lcd_line_1, "C: {:.2}", celcius).unwrap();
-
-                let mut text_lcd_line_2: String<TEXT_BUFFER_LEN> = String::new();
-                core::write!(&mut text_lcd_line_2, "mV: {}", mv).unwrap();
-
-                let lcd_unlocked = &mut LCD.lock().await;
-                if let Some(lcd_ref) = lcd_unlocked.as_mut() {
-                    lcd_ref.text_buffer[0] = text_lcd_line_1;
-                    lcd_ref.text_buffer[1] = text_lcd_line_2;
-                    lcd_ref.display_text().await;
-                }
-
-                // Write to file
-                {
-                    let log_file_unlocked = &mut LOG_FILE.lock().await;
-                    if let Some(log_file_ref) = log_file_unlocked.as_mut() {
-                        log_file_ref.log_data(bytemuck::cast_slice(adc_buf)).await;
-                    }
-                }
-                //adc_pac.cr2().modify(|w| w.set_adon(false));
-                ticker.next().await;
-            }
-        };
-        fut_main.await;
-    */
 
     ///////
 
