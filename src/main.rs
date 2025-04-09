@@ -302,8 +302,18 @@ async fn transfer_dma(
         &'static mut [u16],
     ) -> Transfer<'static>,
 ) {
-    let dma_pac = embassy_stm32::pac::DMA1;
+    //let dma_pac = embassy_stm32::pac::DMA1;
     let adc_pac = embassy_stm32::pac::ADC1;
+
+    // set the GPIO pin to analog mode
+    // let dma_gpio_a = embassy_stm32::pac::GPIOA;
+    // dma_gpio_a.cr(1).modify(|w| w.set_mode(0, 0b00.into()));
+    // TODO: this may not be necessary
+    //let mut pa1 = Flex::new(p.PA1);
+    //pa1.set_as_analog();
+
+    // Software trigger
+    adc_pac.cr2().modify(|w| w.set_extsel(0b111.into()));
 
     adc_pac.cr1().modify(|w| {
         w.set_scan(true); // Scan mode
@@ -315,21 +325,20 @@ async fn transfer_dma(
         w.set_cont(true); // Continuous conversion
     });
 
-    // Configure channel and sampling time
+    // Enable vref & temp
+    adc_pac.cr2().modify(|w| w.set_tsvrefe(true));
+
+    // Set length to 3 conversions
     adc_pac.sqr1().modify(|w| w.set_l(2)); // 3 conversion.
 
-    // set the GPIO pin to analog mode
-    // let dma_gpio_a = embassy_stm32::pac::GPIOA;
-    // dma_gpio_a.cr(1).modify(|w| w.set_mode(0, 0b00.into()));
-    // TODO: this may not be necessary
-    //let mut pa1 = Flex::new(p.PA1);
-    //pa1.set_as_analog();
-
-    // Assign channels to conversion
+    // Set sample sequence. Assign channels to conversion
     const PIN_CHANNEL: u8 = 0x01;
-    adc_pac.sqr3().modify(|w| w.set_sq(0, PIN_CHANNEL));
-    adc_pac.sqr3().modify(|w| w.set_sq(1, 16));
-    adc_pac.sqr3().modify(|w| w.set_sq(2, 17));
+    //adc_pac.sqr3().modify(|w| w.set_sq(0, PIN_CHANNEL));
+    //adc_pac.sqr3().modify(|w| w.set_sq(1, 16));
+    //adc_pac.sqr3().modify(|w| w.set_sq(2, 17));
+    adc_pac.sqr3().modify(|w| w.set_sq(2, PIN_CHANNEL));
+    adc_pac.sqr3().modify(|w| w.set_sq(0, 16));
+    adc_pac.sqr3().modify(|w| w.set_sq(1, 17));
 
     // Set sample times
     adc_pac
@@ -342,23 +351,80 @@ async fn transfer_dma(
         .smpr1()
         .modify(|w| w.set_smp(7 as usize, adc::SampleTime::CYCLES239_5));
 
-    //adc.enable_vref() for vref & temp
-    adc_pac.cr2().modify(|reg| reg.set_tsvrefe(true));
+    info!(
+        "ADC: sqr1_l {}, sqr3 {} smp_6: {}, smp_7: {}",
+        adc_pac.sqr1().read().l(),
+        adc_pac.sqr3().read().0.to_be_bytes(),
+        adc_pac.smpr1().read().smp(6).to_bits(),
+        adc_pac.smpr1().read().smp(7).to_bits(),
+    );
 
-    /*Power up the adc*/
+    // Set DMA
+    let dma_pac = embassy_stm32::pac::DMA1;
+
+    dma_pac.ch(0).cr().modify(|w| {
+        w.set_msize(0b01.into()); //16 bits
+        w.set_psize(0b01.into()); //16 bits
+        w.set_minc(true);
+        w.set_circ(true);
+    });
+
+    // Set ADC address
+    dma_pac
+        .ch(0)
+        .par()
+        .write_value(adc_pac.dr().as_ptr() as u32);
+
+    const NUM_CHANNELS: usize = 3;
+    const NUM_SAMPLES: usize = 100;
+    let adc_buf: [u16; NUM_SAMPLES * NUM_CHANNELS] = [0u16; { NUM_SAMPLES * NUM_CHANNELS }];
+    dma_pac.ch(0).mar().write_value(adc_buf.as_ptr() as u32);
+
+    dma_pac
+        .ch(0)
+        .ndtr()
+        .modify(|w| w.set_ndt((NUM_CHANNELS * NUM_SAMPLES) as u16));
+
+    // Enable DMA channel
+    dma_pac.ch(0).cr().modify(|w| w.set_en(true));
+
+    // Power up ADC
     adc_pac.cr2().modify(|w| w.set_adon(true));
 
-    /*Wait a little bit*/
+    // Wait a bit
     Timer::after(Duration::from_millis(100)).await;
 
     // Set adon to start conversion
     adc_pac.cr2().modify(|w| w.set_adon(true));
     adc_pac.cr2().modify(|w| w.set_swstart(true));
 
-    const NUM_CHANNELS: usize = 3;
-    const NUM_SAMPLES: usize = 100;
+    info!(
+        "[before] mem2mem {} circ {} msize {} psize {} dir {} en {} ndt {}",
+        dma_pac.ch(0).cr().read().mem2mem() as u8,
+        dma_pac.ch(0).cr().read().circ() as u8,
+        dma_pac.ch(0).cr().read().msize().to_bits(),
+        dma_pac.ch(0).cr().read().psize().to_bits(),
+        dma_pac.ch(0).cr().read().dir().to_bits(),
+        dma_pac.ch(0).cr().read().en() as u8,
+        dma_pac.ch(0).ndtr().read().ndt(),
+    );
+
+    //const NUM_CHANNELS: usize = 3;
+    //const NUM_SAMPLES: usize = 100;
     let mut ticker = Ticker::every(Duration::from_millis(100));
     loop {
+        info!(
+            "[loop] minc {} circ {} msize {} psize {} dir {} en {} ndt {}",
+            dma_pac.ch(0).cr().read().minc() as u8,
+            dma_pac.ch(0).cr().read().circ() as u8,
+            dma_pac.ch(0).cr().read().msize().to_bits(),
+            dma_pac.ch(0).cr().read().psize().to_bits(),
+            dma_pac.ch(0).cr().read().dir().to_bits(),
+            dma_pac.ch(0).cr().read().en() as u8,
+            dma_pac.ch(0).ndtr().read().ndt(),
+        );
+
+        /*
         static mut ADC_BUF: [u16; NUM_SAMPLES * NUM_CHANNELS] =
             [0u16; { NUM_SAMPLES * NUM_CHANNELS }];
         let adc_buf = unsafe { &mut ADC_BUF[..] };
@@ -368,6 +434,7 @@ async fn transfer_dma(
         adc_transfer.await;
 
         let adc_buf = unsafe { &ADC_BUF[..] };
+        */
         info!("DMA transfer: {:?}", adc_buf[..NUM_CHANNELS * 3]);
         //info!("DMA transfer: {:?}", adc_buf[..]);
 
@@ -405,7 +472,7 @@ async fn transfer_dma(
         {
             let log_file_unlocked = &mut LOG_FILE.lock().await;
             if let Some(log_file_ref) = log_file_unlocked.as_mut() {
-                log_file_ref.log_data(bytemuck::cast_slice(adc_buf)).await;
+                log_file_ref.log_data(bytemuck::cast_slice(&adc_buf)).await;
             }
         }
         ticker.next().await;
