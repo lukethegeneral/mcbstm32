@@ -4,17 +4,20 @@
 mod display;
 use cortex_m::singleton;
 use display::{Lcd, TEXT_BUFFER_LEN};
+use embassy_stm32::exti::{self, ExtiInput};
 
 mod log;
 use embassy_stm32::dma::{self, AnyChannel, Channel, Priority, ReadableRingBuffer, Transfer};
 use embassy_stm32::rcc::mux::ClockMux;
+use embassy_stm32::timer::input_capture::{CapturePin, InputCapture};
+use embassy_sync::waitqueue::AtomicWaker;
 //use embassy_stm32::timer::low_level::Timer;
 use log::LogFile;
 use static_cell::{ConstStaticCell, StaticCell};
 use stm32_metapac::bdma::{regs, Dma};
 
 use core::fmt::{write, Write};
-use core::task;
+use core::task::{self, Waker};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use heapless::{String, Vec};
@@ -22,7 +25,7 @@ use heapless::{String, Vec};
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_stm32::adc::{Adc, AdcChannel, AnyAdcChannel, RxDma, SampleTime, Temperature, Vref};
-use embassy_stm32::gpio::{Flex, Level, Output, Speed};
+use embassy_stm32::gpio::{Flex, Input, Level, Output, Pull, Speed};
 use embassy_stm32::i2c::I2c;
 //use embassy_stm32::pac;
 use embassy_stm32::peripherals::{ADC1, DMA1, DMA1_CH1, DMA1_CH2, I2C1, TIM1};
@@ -281,7 +284,7 @@ fn adc_dma_transfer(
             adc_pac.sqr3().read().sq(2),
         );
 
-        let dma_transfer = Transfer::new_read(
+        let dma_transf = Transfer::new_read(
             dma_ch.clone_unchecked(),
             req,
             pac::ADC1.dr().as_ptr() as *mut u16, //0x40012400
@@ -290,12 +293,78 @@ fn adc_dma_transfer(
             options,
         );
 
-        dma_transfer
+        dma_transf
+    }
+}
+
+pub(crate) struct ChannelState {
+    waker: AtomicWaker,
+    complete_count: core::sync::atomic::AtomicUsize,
+}
+impl ChannelState {
+    pub(crate) const NEW: Self = Self {
+        waker: AtomicWaker::new(),
+        complete_count: core::sync::atomic::AtomicUsize::new(0),
+    };
+}
+
+struct DmaTransfer<'a> {
+    channel: embassy_stm32::PeripheralRef<'a, AnyChannel>,
+}
+impl<'a> DmaTransfer<'a> {
+    fn is_running() -> bool {
+        let dma_pac = embassy_stm32::pac::DMA1;
+
+        if dma_pac.ch(0).ndtr().read().ndt() == 0 {
+            true
+        } else {
+            false
+        }
+    }
+}
+
+impl<'a> core::future::Future for DmaTransfer<'a> {
+    type Output = ();
+    fn poll(
+        mut self: core::pin::Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+    ) -> task::Poll<Self::Output> {
+        // let state: &ChannelState = &STATE[self.channel.id as usize];
+        let state: &ChannelState = &ChannelState::NEW;
+        //let x = AtomicWaker::new();
+
+        state.waker.register(cx.waker());
+
+        if DmaTransfer::<'a>::is_running() {
+            task::Poll::Pending
+        } else {
+            task::Poll::Ready(())
+        }
     }
 }
 
 #[embassy_executor::task]
-async fn transfer_dma(
+async fn blink(mut sensor: ExtiInput<'static>, mut led: Output<'static>) {
+    loop {
+        /*
+        button.wait_for_rising_edge().await;
+        info!("Pressed!");
+        button.wait_for_falling_edge().await;
+        info!("Released!");
+        */
+
+        sensor.wait_for_any_edge().await;
+        //sensor.wait_for_falling_edge().await;
+        if sensor.is_low() {
+            led.set_high();
+        } else {
+            led.set_low();
+        }
+    }
+}
+
+#[embassy_executor::task]
+async fn dma_transfer(
     dma_ch: &'static DMA1_CH1,
     dma_transfer_closure: &'static dyn Fn(
         &'static DMA1_CH1,
@@ -333,12 +402,9 @@ async fn transfer_dma(
 
     // Set sample sequence. Assign channels to conversion
     const PIN_CHANNEL: u8 = 0x01;
-    //adc_pac.sqr3().modify(|w| w.set_sq(0, PIN_CHANNEL));
-    //adc_pac.sqr3().modify(|w| w.set_sq(1, 16));
-    //adc_pac.sqr3().modify(|w| w.set_sq(2, 17));
-    adc_pac.sqr3().modify(|w| w.set_sq(2, PIN_CHANNEL));
     adc_pac.sqr3().modify(|w| w.set_sq(0, 16));
     adc_pac.sqr3().modify(|w| w.set_sq(1, 17));
+    adc_pac.sqr3().modify(|w| w.set_sq(2, PIN_CHANNEL));
 
     // Set sample times
     adc_pac
@@ -667,7 +733,12 @@ async fn main(spawner: Spawner) {
     //    if let Some(dma_ch_ref) = dma_ch_unlocked.as_mut() {
     //        dma_ch = unsafe { dma_ch_ref.clone_unchecked() };
     //    }
-    unwrap!(spawner.spawn(transfer_dma(dma_ch, &adc_dma_transfer)));
+    unwrap!(spawner.spawn(dma_transfer(dma_ch, &adc_dma_transfer)));
+
+    let sensor = ExtiInput::new(p.PC10, p.EXTI10, Pull::Up);
+    let led = Output::new(p.PB10, Level::Low, Speed::VeryHigh);
+
+    unwrap!(spawner.spawn(blink(sensor, led)));
 
     // fake task to keep the program running
     let fut = async {};

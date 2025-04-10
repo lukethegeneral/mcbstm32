@@ -11,9 +11,9 @@ test = false
 bench = false
 
 [dependencies]
-defmt = "0.3"
-defmt-rtt = "0.4"
-panic-probe = { version = "0.3", features = ["print-defmt"] }
+defmt = "1.0.1"
+defmt-rtt = "1.0.0"
+panic-probe = { version = "1.0.0", features = ["print-defmt"] }
 
 embedded-hal = "1.0.0"
 embedded-hal-async = "1.0.0"
@@ -43,6 +43,7 @@ embassy-stm32 = { version = "*", features = [
 	"memory-x",
 	#"time-driver-tim4",
 	"time-driver-any",
+	"exti",
 ] }
 embassy-executor = { version = "0.7", features = [
 	"task-arena-size-8192",
