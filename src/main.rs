@@ -346,13 +346,6 @@ impl<'a> core::future::Future for DmaTransfer<'a> {
 #[embassy_executor::task]
 async fn blink(mut sensor: ExtiInput<'static>, mut led: Output<'static>) {
     loop {
-        /*
-        button.wait_for_rising_edge().await;
-        info!("Pressed!");
-        button.wait_for_falling_edge().await;
-        info!("Released!");
-        */
-
         sensor.wait_for_any_edge().await;
         //sensor.wait_for_falling_edge().await;
         if sensor.is_low() {
@@ -401,7 +394,7 @@ async fn dma_transfer(
     adc_pac.sqr1().modify(|w| w.set_l(2)); // 3 conversion.
 
     // Set sample sequence. Assign channels to conversion
-    const PIN_CHANNEL: u8 = 0x01;
+    const PIN_CHANNEL: u8 = 0x02;
     adc_pac.sqr3().modify(|w| w.set_sq(0, 16));
     adc_pac.sqr3().modify(|w| w.set_sq(1, 17));
     adc_pac.sqr3().modify(|w| w.set_sq(2, PIN_CHANNEL));
@@ -463,17 +456,6 @@ async fn dma_transfer(
     // Set adon to start conversion
     adc_pac.cr2().modify(|w| w.set_adon(true));
     adc_pac.cr2().modify(|w| w.set_swstart(true));
-
-    info!(
-        "[before] mem2mem {} circ {} msize {} psize {} dir {} en {} ndt {}",
-        dma_pac.ch(0).cr().read().mem2mem() as u8,
-        dma_pac.ch(0).cr().read().circ() as u8,
-        dma_pac.ch(0).cr().read().msize().to_bits(),
-        dma_pac.ch(0).cr().read().psize().to_bits(),
-        dma_pac.ch(0).cr().read().dir().to_bits(),
-        dma_pac.ch(0).cr().read().en() as u8,
-        dma_pac.ch(0).ndtr().read().ndt(),
-    );
 
     //const NUM_CHANNELS: usize = 3;
     //const NUM_SAMPLES: usize = 100;
