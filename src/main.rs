@@ -25,7 +25,7 @@ use heapless::{String, Vec};
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_stm32::adc::{Adc, AdcChannel, AnyAdcChannel, RxDma, SampleTime, Temperature, Vref};
-use embassy_stm32::gpio::{Flex, Input, Level, Output, Pull, Speed};
+use embassy_stm32::gpio::{Flex, Input, Level, Output, Pin, Pull, Speed};
 use embassy_stm32::i2c::I2c;
 //use embassy_stm32::pac;
 use embassy_stm32::peripherals::{ADC1, DMA1, DMA1_CH1, DMA1_CH2, I2C1, TIM1};
@@ -42,7 +42,6 @@ bind_interrupts!(struct Irqs {
     ADC1_2 => adc::InterruptHandler<ADC1>;
     I2C1_EV => i2c::EventInterruptHandler<I2C1>;
     I2C1_ER => i2c::ErrorInterruptHandler<I2C1>;
-    //DMA1_CHANNEL1 => dyn dma::ChannelInterrupt<peripherals::DMA1_CH1>;
 });
 
 const LOG_FILE_NAME: &str = "RPM_DATA.bin";
@@ -268,21 +267,18 @@ fn adc_dma_transfer(
             dma_pac.ch(0).ndtr().read().ndt(),
         );
         */
-        info!(
-            "ADC befor: sqr3_sq0 {} sqr3_sq1 {} sqr3_sq2 {}",
-            adc_pac.sqr3().read().sq(0),
-            adc_pac.sqr3().read().sq(1),
-            adc_pac.sqr3().read().sq(2),
-        );
-        adc_pac.sqr3().modify(|w| w.set_sq(0, 1));
-        adc_pac.sqr3().modify(|w| w.set_sq(1, 16));
-        adc_pac.sqr3().modify(|w| w.set_sq(2, 17));
+        const PIN_CHANNEL: u8 = 0x02;
+        adc_pac.sqr3().modify(|w| w.set_sq(0, 16));
+        adc_pac.sqr3().modify(|w| w.set_sq(1, 17));
+        adc_pac.sqr3().modify(|w| w.set_sq(2, PIN_CHANNEL));
+        /*
         info!(
             "ADC after: sqr3_sq0 {} sqr3_sq1 {} sqr3_sq2 {}",
             adc_pac.sqr3().read().sq(0),
             adc_pac.sqr3().read().sq(1),
             adc_pac.sqr3().read().sq(2),
         );
+        */
 
         let dma_transf = Transfer::new_read(
             dma_ch.clone_unchecked(),
@@ -370,9 +366,6 @@ async fn dma_transfer(
     // set the GPIO pin to analog mode
     // let dma_gpio_a = embassy_stm32::pac::GPIOA;
     // dma_gpio_a.cr(1).modify(|w| w.set_mode(0, 0b00.into()));
-    // TODO: this may not be necessary
-    //let mut pa1 = Flex::new(p.PA1);
-    //pa1.set_as_analog();
 
     // Software trigger
     adc_pac.cr2().modify(|w| w.set_extsel(0b111.into()));
@@ -421,6 +414,8 @@ async fn dma_transfer(
     // Set DMA
     let dma_pac = embassy_stm32::pac::DMA1;
 
+    // ****
+    // Turn on DMA settings manually
     dma_pac.ch(0).cr().modify(|w| {
         w.set_msize(0b01.into()); //16 bits
         w.set_psize(0b01.into()); //16 bits
@@ -444,8 +439,9 @@ async fn dma_transfer(
         .ndtr()
         .modify(|w| w.set_ndt((NUM_CHANNELS * NUM_SAMPLES) as u16));
 
-    // Enable DMA channel
+    // Enable DMA channel 0
     dma_pac.ch(0).cr().modify(|w| w.set_en(true));
+    //****
 
     // Power up ADC
     adc_pac.cr2().modify(|w| w.set_adon(true));
@@ -457,8 +453,6 @@ async fn dma_transfer(
     adc_pac.cr2().modify(|w| w.set_adon(true));
     adc_pac.cr2().modify(|w| w.set_swstart(true));
 
-    //const NUM_CHANNELS: usize = 3;
-    //const NUM_SAMPLES: usize = 100;
     let mut ticker = Ticker::every(Duration::from_millis(100));
     loop {
         info!(
@@ -472,7 +466,10 @@ async fn dma_transfer(
             dma_pac.ch(0).ndtr().read().ndt(),
         );
 
+        /* *** DMA auto */
         /*
+        const NUM_CHANNELS: usize = 3;
+        const NUM_SAMPLES: usize = 100;
         static mut ADC_BUF: [u16; NUM_SAMPLES * NUM_CHANNELS] =
             [0u16; { NUM_SAMPLES * NUM_CHANNELS }];
         let adc_buf = unsafe { &mut ADC_BUF[..] };
@@ -483,6 +480,8 @@ async fn dma_transfer(
 
         let adc_buf = unsafe { &ADC_BUF[..] };
         */
+        // ****
+
         info!("DMA transfer: {:?}", adc_buf[..NUM_CHANNELS * 3]);
         //info!("DMA transfer: {:?}", adc_buf[..]);
 
