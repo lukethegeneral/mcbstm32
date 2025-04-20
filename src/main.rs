@@ -5,12 +5,17 @@ mod display;
 use cortex_m::singleton;
 use display::{Lcd, TEXT_BUFFER_LEN};
 use embassy_stm32::exti::{self, ExtiInput};
+use embassy_stm32::timer::low_level::OutputCompareMode;
+use embassy_stm32::timer::pwm_input::PwmInput;
+use embassy_stm32::timer::simple_pwm::{PwmPin, SimplePwm};
+use embassy_stm32::timer::Channel;
 
 mod log;
-use embassy_stm32::dma::{self, AnyChannel, Channel, Priority, ReadableRingBuffer, Transfer};
+use embassy_stm32::dma::{self, AnyChannel, Transfer};
 use embassy_stm32::rcc::mux::ClockMux;
 use embassy_stm32::timer::input_capture::{CapturePin, InputCapture};
 use embassy_sync::waitqueue::AtomicWaker;
+use embedded_hal::pwm;
 //use embassy_stm32::timer::low_level::Timer;
 use log::LogFile;
 use static_cell::{ConstStaticCell, StaticCell};
@@ -25,12 +30,12 @@ use heapless::{String, Vec};
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_stm32::adc::{Adc, AdcChannel, AnyAdcChannel, RxDma, SampleTime, Temperature, Vref};
-use embassy_stm32::gpio::{Flex, Input, Level, Output, Pin, Pull, Speed};
+use embassy_stm32::gpio::{Flex, Input, Level, Output, OutputType, Pin, Pull, Speed};
 use embassy_stm32::i2c::I2c;
 //use embassy_stm32::pac;
 use embassy_stm32::peripherals::{ADC1, DMA1, DMA1_CH1, DMA1_CH2, I2C1, TIM1};
 use embassy_stm32::spi::Spi;
-use embassy_stm32::time::{mhz, Hertz};
+use embassy_stm32::time::{khz, mhz, Hertz};
 use embassy_stm32::{adc, bind_interrupts, i2c, peripherals, spi, Config, Peripheral};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::mutex::Mutex;
@@ -42,6 +47,7 @@ bind_interrupts!(struct Irqs {
     ADC1_2 => adc::InterruptHandler<ADC1>;
     I2C1_EV => i2c::EventInterruptHandler<I2C1>;
     I2C1_ER => i2c::ErrorInterruptHandler<I2C1>;
+    TIM2 => embassy_stm32::timer::CaptureCompareInterruptHandler<peripherals::TIM2>;
 });
 
 const LOG_FILE_NAME: &str = "RPM_DATA.bin";
@@ -343,12 +349,43 @@ impl<'a> core::future::Future for DmaTransfer<'a> {
 async fn blink(mut sensor: ExtiInput<'static>, mut led: Output<'static>) {
     loop {
         sensor.wait_for_any_edge().await;
-        //sensor.wait_for_falling_edge().await;
         if sensor.is_low() {
             led.set_high();
         } else {
             led.set_low();
         }
+    }
+}
+
+#[embassy_executor::task]
+async fn stop(mut stop_button: ExtiInput<'static>) {
+    loop {
+        stop_button.wait_for_falling_edge().await;
+        core::panic!("stop button pressed");
+    }
+}
+
+#[embassy_executor::task]
+async fn pwm_wave(mut pwm: SimplePwm<'static, peripherals::TIM2>) {
+    let mut ch4 = pwm.ch4();
+    ch4.enable();
+    ch4.set_duty_cycle(50);
+    loop {
+        //ch4.set_duty_cycle_fully_off();
+        //Timer::after_millis(300).await;
+        //ch4.set_duty_cycle_fraction(1, 4);
+        //Timer::after_millis(300).await;
+        //ch4.set_duty_cycle_fraction(1, 2);
+        //Timer::after_millis(300).await;
+        //ch4.set_duty_cycle(ch4.max_duty_cycle() - 1);
+        //Timer::after_millis(300).await;
+        ch4.set_duty_cycle_fraction(2, 40);
+        Timer::after_millis(300).await;
+        ch4.set_duty_cycle_fraction(3, 40);
+        Timer::after_millis(300).await;
+        ch4.set_duty_cycle_fraction(4, 40);
+        Timer::after_millis(300).await;
+        info!("[pwm] duty cycle: {}", ch4.current_duty_cycle());
     }
 }
 
@@ -387,7 +424,7 @@ async fn dma_transfer(
     adc_pac.sqr1().modify(|w| w.set_l(2)); // 3 conversion.
 
     // Set sample sequence. Assign channels to conversion
-    const PIN_CHANNEL: u8 = 0x02;
+    const PIN_CHANNEL: u8 = 0x02; //PA2
     adc_pac.sqr3().modify(|w| w.set_sq(0, 16));
     adc_pac.sqr3().modify(|w| w.set_sq(1, 17));
     adc_pac.sqr3().modify(|w| w.set_sq(2, PIN_CHANNEL));
@@ -498,7 +535,16 @@ async fn dma_transfer(
         };
 
         let celcius = convert_to_celcius(adc_buf[2], adc_buf[1]);
-        let mv = adc_buf[0];
+        //let mv = adc_buf[0];
+
+        let avg_ch0 = adc_buf
+            .iter()
+            .skip(0)
+            .step_by(NUM_CHANNELS)
+            .fold(0, |acc: u32, x| acc + *x as u32)
+            / NUM_SAMPLES as u32;
+        let mv = avg_ch0 as u16;
+
         // Write to LCD
         let mut text_lcd_line_1: String<TEXT_BUFFER_LEN> = String::new();
         core::write!(&mut text_lcd_line_1, "C: {:.2}", celcius).unwrap();
@@ -600,9 +646,6 @@ async fn main(spawner: Spawner) {
         config.rcc.apb1_pre = APBPrescaler::DIV2;
         config.rcc.apb2_pre = APBPrescaler::DIV1;
         config.rcc.adc_pre = ADCPrescaler::DIV6;
-
-        //config.bdma_interrupt_priority = embassy_stm32::interrupt::Priority::P1;
-        //config.enable_debug_during_sleep = true;
     }
     let p = embassy_stm32::init(config);
     //let p = embassy_stm32::init(Default::default());
@@ -702,6 +745,20 @@ async fn main(spawner: Spawner) {
     tim.set_frequency(Hertz(100_000));
     */
 
+    let ch4_pin = PwmPin::new_ch4(p.PA3, OutputType::PushPull);
+    let pwm = SimplePwm::new(
+        p.TIM2,
+        None,
+        None,
+        None,
+        Some(ch4_pin),
+        //khz(1),
+        embassy_stm32::time::Hertz(50),
+        Default::default(),
+    );
+
+    unwrap!(spawner.spawn(pwm_wave(pwm)));
+
     //let dma_ch = unsafe { p.DMA1_CH1.clone_unchecked() };
     let dma_ch = p.DMA1_CH1;
     static DMA_CH: StaticCell<DMA1_CH1> = StaticCell::new();
@@ -720,6 +777,10 @@ async fn main(spawner: Spawner) {
     let led = Output::new(p.PB10, Level::Low, Speed::VeryHigh);
 
     unwrap!(spawner.spawn(blink(sensor, led)));
+
+    // Stop button
+    let stop_button = ExtiInput::new(p.PC13, p.EXTI13, Pull::Up);
+    unwrap!(spawner.spawn(stop(stop_button)));
 
     // fake task to keep the program running
     let fut = async {};

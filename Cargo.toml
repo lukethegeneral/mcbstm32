@@ -41,8 +41,8 @@ embassy-stm32 = { version = "*", features = [
 	"stm32f103rb",
 	"unstable-pac",
 	"memory-x",
-	#"time-driver-tim4",
-	"time-driver-any",
+	"time-driver-tim4",
+	#"time-driver-any",
 	"exti",
 ] }
 embassy-executor = { version = "0.7", features = [
