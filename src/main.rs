@@ -5,6 +5,7 @@ mod display;
 use cortex_m::singleton;
 use display::{Lcd, TEXT_BUFFER_LEN};
 use embassy_stm32::exti::{self, ExtiInput};
+use embassy_stm32::timer::complementary_pwm::{ComplementaryPwm, ComplementaryPwmPin};
 use embassy_stm32::timer::low_level::OutputCompareMode;
 use embassy_stm32::timer::pwm_input::PwmInput;
 use embassy_stm32::timer::simple_pwm::{PwmPin, SimplePwm};
@@ -48,6 +49,7 @@ bind_interrupts!(struct Irqs {
     I2C1_EV => i2c::EventInterruptHandler<I2C1>;
     I2C1_ER => i2c::ErrorInterruptHandler<I2C1>;
     TIM2 => embassy_stm32::timer::CaptureCompareInterruptHandler<peripherals::TIM2>;
+    TIM3 => embassy_stm32::timer::CaptureCompareInterruptHandler<peripherals::TIM3>;
 });
 
 const LOG_FILE_NAME: &str = "RPM_DATA.bin";
@@ -366,26 +368,45 @@ async fn stop(mut stop_button: ExtiInput<'static>) {
 }
 
 #[embassy_executor::task]
-async fn pwm_wave(mut pwm: SimplePwm<'static, peripherals::TIM2>) {
-    let mut ch4 = pwm.ch4();
-    ch4.enable();
-    ch4.set_duty_cycle(50);
+async fn pwm_wave(mut pwm: SimplePwm<'static, peripherals::TIM3>) {
+    let mut ch3 = pwm.ch3();
+    ch3.enable();
+    //ch4.set_duty_cycle(50);
     loop {
-        //ch4.set_duty_cycle_fully_off();
-        //Timer::after_millis(300).await;
-        //ch4.set_duty_cycle_fraction(1, 4);
-        //Timer::after_millis(300).await;
-        //ch4.set_duty_cycle_fraction(1, 2);
-        //Timer::after_millis(300).await;
-        //ch4.set_duty_cycle(ch4.max_duty_cycle() - 1);
-        //Timer::after_millis(300).await;
+        ch3.set_duty_cycle_fully_off();
+        Timer::after_millis(300).await;
+        ch3.set_duty_cycle_fraction(1, 4);
+        Timer::after_millis(300).await;
+        ch3.set_duty_cycle_fraction(1, 2);
+        Timer::after_millis(300).await;
+        ch3.set_duty_cycle(ch3.max_duty_cycle() - 1);
+        Timer::after_millis(300).await;
+        /*
         ch4.set_duty_cycle_fraction(2, 40);
         Timer::after_millis(300).await;
         ch4.set_duty_cycle_fraction(3, 40);
         Timer::after_millis(300).await;
         ch4.set_duty_cycle_fraction(4, 40);
         Timer::after_millis(300).await;
-        info!("[pwm] duty cycle: {}", ch4.current_duty_cycle());
+        */
+        //ch4.set_duty_cycle(ch4.max_duty_cycle() - 1);
+        //Timer::after_millis(300).await;
+        //info!("[pwm] duty cycle: {}", ch4.current_duty_cycle());
+    }
+}
+
+#[embassy_executor::task]
+async fn pwm_read_input(mut pwm_input: PwmInput<'static, peripherals::TIM2>) {
+    pwm_input.enable();
+    loop {
+        let period = pwm_input.get_period_ticks();
+        let width = pwm_input.get_width_ticks();
+        let duty_cycle = pwm_input.get_duty_cycle();
+        info!(
+            "[PWM input] period ticks: {} width ticks: {} duty cycle: {}",
+            period, width, duty_cycle
+        );
+        Timer::after_millis(300).await;
     }
 }
 
@@ -432,7 +453,7 @@ async fn dma_transfer(
     // Set sample times
     adc_pac
         .smpr2()
-        .modify(|w| w.set_smp(PIN_CHANNEL as usize, adc::SampleTime::CYCLES41_5));
+        .modify(|w| w.set_smp(PIN_CHANNEL as usize, adc::SampleTime::CYCLES13_5));
     adc_pac
         .smpr1()
         .modify(|w| w.set_smp(6 as usize, adc::SampleTime::CYCLES239_5));
@@ -745,19 +766,25 @@ async fn main(spawner: Spawner) {
     tim.set_frequency(Hertz(100_000));
     */
 
-    let ch4_pin = PwmPin::new_ch4(p.PA3, OutputType::PushPull);
+    // PWM output
+    //    let ch4_pin = PwmPin::new_ch4(p.PA3, OutputType::PushPull);
+    let ch3_pin = PwmPin::new_ch3(p.PB0, OutputType::PushPull);
     let pwm = SimplePwm::new(
-        p.TIM2,
+        p.TIM3,
         None,
         None,
+        Some(ch3_pin),
         None,
-        Some(ch4_pin),
-        //khz(1),
-        embassy_stm32::time::Hertz(50),
+        //khz(1000),
+        embassy_stm32::time::Hertz(10000),
         Default::default(),
     );
 
     unwrap!(spawner.spawn(pwm_wave(pwm)));
+
+    // Read PWM input
+    let pwm_input = PwmInput::new_alt(p.TIM2, p.PA1, Pull::None, khz(1000));
+    unwrap!(spawner.spawn(pwm_read_input(pwm_input)));
 
     //let dma_ch = unsafe { p.DMA1_CH1.clone_unchecked() };
     let dma_ch = p.DMA1_CH1;
