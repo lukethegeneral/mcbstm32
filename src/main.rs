@@ -441,19 +441,25 @@ async fn dma_transfer(
     // Enable vref & temp
     adc_pac.cr2().modify(|w| w.set_tsvrefe(true));
 
+    const NUM_CHANNELS: usize = 4;
     // Set length to 3 conversions
-    adc_pac.sqr1().modify(|w| w.set_l(2)); // 3 conversion.
+    adc_pac.sqr1().modify(|w| w.set_l((NUM_CHANNELS - 1) as u8)); // number of channels conversion.
 
     // Set sample sequence. Assign channels to conversion
-    const PIN_CHANNEL: u8 = 0x02; //PA2
+    const PIN_CHANNEL_AFR: u8 = 0x02; //PA2
+    const PIN_CHANNEL_RPM: u8 = 0x01; //PA1
     adc_pac.sqr3().modify(|w| w.set_sq(0, 16));
     adc_pac.sqr3().modify(|w| w.set_sq(1, 17));
-    adc_pac.sqr3().modify(|w| w.set_sq(2, PIN_CHANNEL));
+    adc_pac.sqr3().modify(|w| w.set_sq(2, PIN_CHANNEL_AFR));
+    adc_pac.sqr3().modify(|w| w.set_sq(3, PIN_CHANNEL_RPM));
 
     // Set sample times
     adc_pac
         .smpr2()
-        .modify(|w| w.set_smp(PIN_CHANNEL as usize, adc::SampleTime::CYCLES13_5));
+        .modify(|w| w.set_smp(PIN_CHANNEL_AFR as usize, adc::SampleTime::CYCLES13_5));
+    adc_pac
+        .smpr2()
+        .modify(|w| w.set_smp(PIN_CHANNEL_RPM as usize, adc::SampleTime::CYCLES7_5));
     adc_pac
         .smpr1()
         .modify(|w| w.set_smp(6 as usize, adc::SampleTime::CYCLES239_5));
@@ -469,6 +475,7 @@ async fn dma_transfer(
         adc_pac.smpr1().read().smp(7).to_bits(),
     );
 
+    // ***Start DMA set***
     // Set DMA
     let dma_pac = embassy_stm32::pac::DMA1;
 
@@ -487,7 +494,6 @@ async fn dma_transfer(
         .par()
         .write_value(adc_pac.dr().as_ptr() as u32);
 
-    const NUM_CHANNELS: usize = 3;
     const NUM_SAMPLES: usize = 100;
     let adc_buf: [u16; NUM_SAMPLES * NUM_CHANNELS] = [0u16; { NUM_SAMPLES * NUM_CHANNELS }];
     dma_pac.ch(0).mar().write_value(adc_buf.as_ptr() as u32);
@@ -499,7 +505,7 @@ async fn dma_transfer(
 
     // Enable DMA channel 0
     dma_pac.ch(0).cr().modify(|w| w.set_en(true));
-    //****
+    //***END DMA set***
 
     // Power up ADC
     adc_pac.cr2().modify(|w| w.set_adon(true));
@@ -513,6 +519,7 @@ async fn dma_transfer(
 
     let mut ticker = Ticker::every(Duration::from_millis(100));
     loop {
+        /*
         info!(
             "[loop] minc {} circ {} msize {} psize {} dir {} en {} ndt {}",
             dma_pac.ch(0).cr().read().minc() as u8,
@@ -523,8 +530,9 @@ async fn dma_transfer(
             dma_pac.ch(0).cr().read().en() as u8,
             dma_pac.ch(0).ndtr().read().ndt(),
         );
+        */
 
-        /* *** DMA auto */
+        /* DMA auto */
         /*
         const NUM_CHANNELS: usize = 3;
         const NUM_SAMPLES: usize = 100;
@@ -776,7 +784,7 @@ async fn main(spawner: Spawner) {
         Some(ch3_pin),
         None,
         //khz(1000),
-        embassy_stm32::time::Hertz(10000),
+        embassy_stm32::time::Hertz(50),
         Default::default(),
     );
 
