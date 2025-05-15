@@ -371,8 +371,11 @@ async fn stop(mut stop_button: ExtiInput<'static>) {
 async fn pwm_wave(mut pwm: SimplePwm<'static, peripherals::TIM3>) {
     let mut ch3 = pwm.ch3();
     ch3.enable();
-    //ch4.set_duty_cycle(50);
+    //ch3.set_duty_cycle(50);
     loop {
+        ch3.set_duty_cycle_fraction(1, 2);
+        Timer::after_millis(300).await;
+        /*
         ch3.set_duty_cycle_fully_off();
         Timer::after_millis(300).await;
         ch3.set_duty_cycle_fraction(1, 4);
@@ -381,6 +384,7 @@ async fn pwm_wave(mut pwm: SimplePwm<'static, peripherals::TIM3>) {
         Timer::after_millis(300).await;
         ch3.set_duty_cycle(ch3.max_duty_cycle() - 1);
         Timer::after_millis(300).await;
+        */
         /*
         ch4.set_duty_cycle_fraction(2, 40);
         Timer::after_millis(300).await;
@@ -396,7 +400,7 @@ async fn pwm_wave(mut pwm: SimplePwm<'static, peripherals::TIM3>) {
 }
 
 #[embassy_executor::task]
-async fn pwm_read_input(mut pwm_input: PwmInput<'static, peripherals::TIM2>) {
+async fn pwm_read_input(mut pwm_input: PwmInput<'static, peripherals::TIM3>) {
     pwm_input.enable();
     loop {
         let period = pwm_input.get_period_ticks();
@@ -776,6 +780,7 @@ async fn main(spawner: Spawner) {
 
     // PWM output
     //    let ch4_pin = PwmPin::new_ch4(p.PA3, OutputType::PushPull);
+    /*
     let ch3_pin = PwmPin::new_ch3(p.PB0, OutputType::PushPull);
     let pwm = SimplePwm::new(
         p.TIM3,
@@ -784,14 +789,16 @@ async fn main(spawner: Spawner) {
         Some(ch3_pin),
         None,
         //khz(1000),
-        embassy_stm32::time::Hertz(50),
+        embassy_stm32::time::Hertz(1000),
         Default::default(),
     );
 
     unwrap!(spawner.spawn(pwm_wave(pwm)));
+    */
 
     // Read PWM input
-    let pwm_input = PwmInput::new_alt(p.TIM2, p.PA1, Pull::None, khz(1000));
+    //let pwm_input = PwmInput::new_alt(p.TIM2, p.PA1, Pull::None, khz(1000));
+    let pwm_input = PwmInput::new_alt(p.TIM3, p.PC7, Pull::None, khz(1000));
     unwrap!(spawner.spawn(pwm_read_input(pwm_input)));
 
     //let dma_ch = unsafe { p.DMA1_CH1.clone_unchecked() };
