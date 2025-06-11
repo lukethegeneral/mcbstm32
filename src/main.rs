@@ -34,7 +34,7 @@ use embassy_stm32::adc::{Adc, AdcChannel, AnyAdcChannel, RxDma, SampleTime, Temp
 use embassy_stm32::gpio::{Flex, Input, Level, Output, OutputType, Pin, Pull, Speed};
 use embassy_stm32::i2c::I2c;
 //use embassy_stm32::pac;
-use embassy_stm32::peripherals::{ADC1, DMA1, DMA1_CH1, DMA1_CH2, I2C1, TIM1};
+use embassy_stm32::peripherals::{ADC1, DMA1_CH1, I2C1};
 use embassy_stm32::spi::Spi;
 use embassy_stm32::time::{khz, mhz, Hertz};
 use embassy_stm32::{adc, bind_interrupts, i2c, peripherals, spi, Config, Peripheral};
@@ -48,7 +48,7 @@ bind_interrupts!(struct Irqs {
     ADC1_2 => adc::InterruptHandler<ADC1>;
     I2C1_EV => i2c::EventInterruptHandler<I2C1>;
     I2C1_ER => i2c::ErrorInterruptHandler<I2C1>;
-    TIM2 => embassy_stm32::timer::CaptureCompareInterruptHandler<peripherals::TIM2>;
+    //TIM2 => embassy_stm32::timer::CaptureCompareInterruptHandler<peripherals::TIM2>;
     TIM3 => embassy_stm32::timer::CaptureCompareInterruptHandler<peripherals::TIM3>;
 });
 
@@ -367,6 +367,7 @@ async fn stop(mut stop_button: ExtiInput<'static>) {
     }
 }
 
+/*
 #[embassy_executor::task]
 async fn pwm_wave(mut pwm: SimplePwm<'static, peripherals::TIM3>) {
     let mut ch3 = pwm.ch3();
@@ -398,19 +399,52 @@ async fn pwm_wave(mut pwm: SimplePwm<'static, peripherals::TIM3>) {
         //info!("[pwm] duty cycle: {}", ch4.current_duty_cycle());
     }
 }
+*/
 
 #[embassy_executor::task]
-async fn pwm_read_input(mut pwm_input: PwmInput<'static, peripherals::TIM3>) {
+async fn pwm_read_input(mut pwm_input: PwmInput<'static, peripherals::TIM1>) {
     pwm_input.enable();
     loop {
         let period = pwm_input.get_period_ticks();
         let width = pwm_input.get_width_ticks();
         let duty_cycle = pwm_input.get_duty_cycle();
+        let enabled = pwm_input.is_enabled();
         info!(
-            "[PWM input] period ticks: {} width ticks: {} duty cycle: {}",
-            period, width, duty_cycle
+            "[PWM input enabled {}] period ticks: {}, width ticks: {}, duty cycle: {}",
+            enabled, period, width, duty_cycle
         );
         Timer::after_millis(300).await;
+
+        let rpm = if period > 0 {
+            // RPM = 60 / 2 * (period * 0.000001) = 30000000 / period
+            // period is in microseconds
+            30000000 / (period as u32)
+        } else {
+            0
+        };
+
+        // Write to LCD
+        let mut text_lcd_line_1: String<TEXT_BUFFER_LEN> = String::new();
+        core::write!(
+            &mut text_lcd_line_1,
+            //"PWM: {:.2}",
+            "PWM: {:.0}",
+            //(1.0 / (period + 1) as f32) * 1000000 as f32
+            rpm,
+        )
+        .unwrap();
+
+        //        let mut text_lcd_line_2: String<TEXT_BUFFER_LEN> = String::new();
+        //        core::write!(&mut text_lcd_line_2, "mV: {}", mv).unwrap();
+
+        {
+            let lcd_unlocked = &mut LCD.lock().await;
+            if let Some(lcd_ref) = lcd_unlocked.as_mut() {
+                lcd_ref.text_buffer[0] = text_lcd_line_1;
+                //                lcd_ref.text_buffer[1] = text_lcd_line_2;
+                lcd_ref.display_text().await;
+            }
+        }
     }
 }
 
@@ -588,7 +622,7 @@ async fn dma_transfer(
         {
             let lcd_unlocked = &mut LCD.lock().await;
             if let Some(lcd_ref) = lcd_unlocked.as_mut() {
-                lcd_ref.text_buffer[0] = text_lcd_line_1;
+                //    lcd_ref.text_buffer[0] = text_lcd_line_1;
                 lcd_ref.text_buffer[1] = text_lcd_line_2;
                 lcd_ref.display_text().await;
             }
@@ -797,8 +831,9 @@ async fn main(spawner: Spawner) {
     */
 
     // Read PWM input
-    //let pwm_input = PwmInput::new_alt(p.TIM2, p.PA1, Pull::None, khz(1000));
-    let pwm_input = PwmInput::new_alt(p.TIM3, p.PC7, Pull::None, khz(1000));
+    //let pwm_input = PwmInput::new_alt(p.TIM2, p.PA1, Pull::None, khz(10));
+    let pwm_input = PwmInput::new_alt(p.TIM1, p.PA9, Pull::None, khz(1000));
+    //let pwm_input = PwmInput::new_alt(p.TIM3, p.PC7, Pull::None, khz(10));
     unwrap!(spawner.spawn(pwm_read_input(pwm_input)));
 
     //let dma_ch = unsafe { p.DMA1_CH1.clone_unchecked() };
