@@ -53,6 +53,7 @@ bind_interrupts!(struct Irqs {
 });
 
 const LOG_FILE_NAME: &str = "RPM_DATA.bin";
+const PWM_FREQ: u32 = 10_000;
 
 static SIGNAL: Signal<CriticalSectionRawMutex, u32> = Signal::new();
 
@@ -416,9 +417,12 @@ async fn pwm_read_input(mut pwm_input: PwmInput<'static, peripherals::TIM1>) {
         Timer::after_millis(300).await;
 
         let rpm = if period > 0 {
-            // RPM = 60 / 2 * (period * 0.000001) = 30000000 / period
-            // period is in microseconds
-            30000000 / (period as u32)
+            //prevent division by zero
+            // example: 2000 RPMs * 2 / 60 = 66.66 Hz
+            // RPM = Frequency * 60 / 2
+            // Frequency = (period * 1/PWM_FREQ)
+            // 60 * PWM_FREQ / 2 / period
+            30 * PWM_FREQ / period
         } else {
             0
         };
@@ -832,7 +836,7 @@ async fn main(spawner: Spawner) {
 
     // Read PWM input
     //let pwm_input = PwmInput::new_alt(p.TIM2, p.PA1, Pull::None, khz(10));
-    let pwm_input = PwmInput::new_alt(p.TIM1, p.PA9, Pull::None, khz(1000));
+    let pwm_input = PwmInput::new_alt(p.TIM1, p.PA9, Pull::None, Hertz(PWM_FREQ));
     //let pwm_input = PwmInput::new_alt(p.TIM3, p.PC7, Pull::None, khz(10));
     unwrap!(spawner.spawn(pwm_read_input(pwm_input)));
 
