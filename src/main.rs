@@ -403,9 +403,109 @@ async fn pwm_wave(mut pwm: SimplePwm<'static, peripherals::TIM3>) {
 */
 
 #[embassy_executor::task]
-async fn pwm_read_input(mut pwm_input: PwmInput<'static, peripherals::TIM1>) {
+//async fn pwm_read_input(mut pwm_input: PwmInput<'static, peripherals::TIM2>) {
+async fn pwm_read_input(tim2: &'static mut peripherals::TIM2, pa0: peripherals::PA0) {
+    let mut pwm_input = PwmInput::new(tim2, pa0, Pull::None, Hertz(PWM_FREQ));
     pwm_input.enable();
+    let mut pwm_buf = [0u32; 100];
+    let mut i: usize = 0;
+    /*
+    let tim2 = embassy_stm32::timer::low_level::Timer::new(p.TIM2);
+    let timer_registers = tim2.regs_gp16();
+    timer_registers
+        .cr2()
+        .modify(|w| w.set_ccds(embassy_stm32::pac::timer::vals::Ccds::ON_UPDATE));
+    timer_registers.dier().modify(|w| {
+        // Enable update DMA request
+        w.set_ude(true);
+        // Enable update interrupt request
+        w.set_uie(true);
+    });
+
+    tim.set_frequency(Hertz(100_000));
+    */
+    let tim2_pac = embassy_stm32::pac::TIM2;
+    tim2_pac.cr2().modify(|w| {
+        // Enable capture/compare DMA request on update
+        w.set_ccds(0b01.into()); // ON_UPDATE
+    });
+    const NUM_CHANNELS: usize = 1;
+    tim2_pac.dcr().modify(|w| {
+        // Set the number of data to transfer
+        w.set_dbl((NUM_CHANNELS - 1) as u8); // 2 data transfers
+        w.set_dba(0b01101.into()); // Set the DMA base address to TIM2 starting from CCR1
+    });
+    tim2_pac.dier().modify(|w| {
+        // Enable update DMA request
+        w.set_ude(true);
+        // Enable update interrupt request
+        //w.set_uie(true);
+        w.set_tde(true);
+        w.set_ccde(0, true);
+    });
+    // ***Start DMA set***
+    // Set DMA
+    let dma_pac = embassy_stm32::pac::DMA1;
+
+    // ****
+    // Turn on DMA settings manually
+    dma_pac.ch(4).cr().modify(|w| {
+        w.set_msize(0b01.into()); //16 bits
+        w.set_psize(0b01.into()); //16 bits
+        w.set_minc(true);
+        w.set_circ(true);
+        //w.set_circ(false);
+    });
+
+    // Set TIM2 address
+    dma_pac
+        .ch(4)
+        .par()
+        .write_value(tim2_pac.dmar().as_ptr() as u32);
+
+    const NUM_SAMPLES: usize = 1;
+    let tim2_buf = [0u16; NUM_SAMPLES * NUM_CHANNELS];
+    dma_pac.ch(4).mar().write_value(tim2_buf.as_ptr() as u32);
+
+    dma_pac
+        .ch(4)
+        .ndtr()
+        .modify(|w| w.set_ndt((NUM_SAMPLES * NUM_CHANNELS) as u16));
+
+    //***END DMA set***
+    tim2_pac.cr1().modify(|w| {
+        // Enable TIM2
+        w.set_cen(true);
+    });
+    // Enable DMA channel 4
+    dma_pac.ch(4).cr().modify(|w| w.set_en(true));
+
+    // Wait a bit
+    Timer::after(Duration::from_millis(100)).await;
+
     loop {
+        info!(
+            "TIM DMA transfer: {:?}, dmar {} ccr1 {}, ccr2 {}",
+            //tim2_buf[..NUM_CHANNELS * 3],
+            tim2_buf[..],
+            tim2_pac.dmar().read().dmab() as u32,
+            tim2_pac.ccr(0).read().ccr() as u16,
+            tim2_pac.ccr(1).read().ccr() as u16,
+        );
+        /*
+        info!(
+            "[TIM2] dbl {} dba {} dmar {} ccds {} ude {} uie {} ccr1 {} ccr2 {}",
+            tim2_pac.dcr().read().dbl() as u8,
+            tim2_pac.dcr().read().dba() as u8,
+            tim2_pac.dmar().read().dmab() as u32,
+            tim2_pac.cr2().read().ccds() as u8,
+            tim2_pac.dier().read().ude() as u8,
+            tim2_pac.dier().read().uie() as u8,
+            tim2_pac.ccr(0).read().ccr() as u16,
+            tim2_pac.ccr(1).read().ccr() as u16,
+        );
+        */
+
         let period = pwm_input.get_period_ticks();
         let width = pwm_input.get_width_ticks();
         let duty_cycle = pwm_input.get_duty_cycle();
@@ -414,10 +514,10 @@ async fn pwm_read_input(mut pwm_input: PwmInput<'static, peripherals::TIM1>) {
             "[PWM input enabled {}] period ticks: {}, width ticks: {}, duty cycle: {}",
             enabled, period, width, duty_cycle
         );
-        Timer::after_millis(300).await;
 
-        let rpm = if period > 0 {
-            //prevent division by zero
+        // period in ms -> period / PWM_FREQ
+        // prevent division by zero
+        let mut rpm = if period > 0 {
             // example: 2000 RPMs * 2 / 60 = 66.66 Hz
             // RPM = Frequency * 60 / 2
             // Frequency = (period * 1/PWM_FREQ)
@@ -427,28 +527,42 @@ async fn pwm_read_input(mut pwm_input: PwmInput<'static, peripherals::TIM1>) {
             0
         };
 
-        // Write to LCD
-        let mut text_lcd_line_1: String<TEXT_BUFFER_LEN> = String::new();
-        core::write!(
-            &mut text_lcd_line_1,
-            //"PWM: {:.2}",
-            "PWM: {:.0}",
-            //(1.0 / (period + 1) as f32) * 1000000 as f32
-            rpm,
-        )
-        .unwrap();
+        /*
+        let rpm = match period {
+            0 => 0, // Prevent division by zero
+            _ => 30 * PWM_FREQ / period,
+        };
+        */
 
-        //        let mut text_lcd_line_2: String<TEXT_BUFFER_LEN> = String::new();
-        //        core::write!(&mut text_lcd_line_2, "mV: {}", mv).unwrap();
+        pwm_buf[i] = rpm;
+        if i >= (pwm_buf.len() - 1) {
+            info!(
+                "[XXX] RPM = {}, i = {}, sum = {}",
+                rpm,
+                i,
+                pwm_buf.iter().sum::<u32>()
+            );
+            rpm = pwm_buf.iter().sum::<u32>() / pwm_buf.len() as u32;
+            // Write to LCD
+            let mut text_lcd_line_1: String<TEXT_BUFFER_LEN> = String::new();
+            core::write!(&mut text_lcd_line_1, "PWM: {:.2}", rpm,).unwrap();
 
-        {
-            let lcd_unlocked = &mut LCD.lock().await;
-            if let Some(lcd_ref) = lcd_unlocked.as_mut() {
-                lcd_ref.text_buffer[0] = text_lcd_line_1;
-                //                lcd_ref.text_buffer[1] = text_lcd_line_2;
-                lcd_ref.display_text().await;
+            {
+                let lcd_unlocked = &mut LCD.lock().await;
+                if let Some(lcd_ref) = lcd_unlocked.as_mut() {
+                    lcd_ref.text_buffer[0] = text_lcd_line_1;
+                    //                lcd_ref.text_buffer[1] = text_lcd_line_2;
+                    lcd_ref.display_text().await;
+                }
             }
+            i = 0;
+        } else {
+            //info!("[x] RPM = {}, i = {}, buf_len = {}", rpm, i, pwm_buf.len());
+            i += 1;
         }
+
+        //Timer::after_millis(1).await;
+        Timer::after_micros(100).await;
     }
 }
 
@@ -543,7 +657,7 @@ async fn dma_transfer(
     dma_pac
         .ch(0)
         .ndtr()
-        .modify(|w| w.set_ndt((NUM_CHANNELS * NUM_SAMPLES) as u16));
+        .modify(|w| w.set_ndt((NUM_SAMPLES * NUM_CHANNELS) as u16));
 
     // Enable DMA channel 0
     dma_pac.ch(0).cr().modify(|w| w.set_en(true));
@@ -590,7 +704,7 @@ async fn dma_transfer(
         */
         // ****
 
-        info!("DMA transfer: {:?}", adc_buf[..NUM_CHANNELS * 3]);
+        //info!("DMA transfer: {:?}", adc_buf[..NUM_CHANNELS * 3]);
         //info!("DMA transfer: {:?}", adc_buf[..]);
 
         let convert_to_celcius = |vrefint_sample, v_sense| {
@@ -799,23 +913,6 @@ async fn main(spawner: Spawner) {
         );
     */
 
-    /////
-    /*
-    let tim = embassy_stm32::timer::low_level::Timer::new(p.TIM2);
-    let timer_registers = tim.regs_gp16();
-    timer_registers
-        .cr2()
-        .modify(|w| w.set_ccds(embassy_stm32::pac::timer::vals::Ccds::ON_UPDATE));
-    timer_registers.dier().modify(|w| {
-        // Enable update DMA request
-        w.set_ude(true);
-        // Enable update interrupt request
-        w.set_uie(true);
-    });
-
-    tim.set_frequency(Hertz(100_000));
-    */
-
     // PWM output
     //    let ch4_pin = PwmPin::new_ch4(p.PA3, OutputType::PushPull);
     /*
@@ -834,11 +931,33 @@ async fn main(spawner: Spawner) {
     unwrap!(spawner.spawn(pwm_wave(pwm)));
     */
 
+    /*
+    let tim2 = embassy_stm32::timer::low_level::Timer::new(p.TIM2);
+    let timer_registers = tim2.regs_gp16();
+    timer_registers
+        .cr2()
+        .modify(|w| w.set_ccds(embassy_stm32::pac::timer::vals::Ccds::ON_UPDATE));
+    timer_registers.dier().modify(|w| {
+        // Enable update DMA request
+        w.set_ude(true);
+        // Enable update interrupt request
+        w.set_uie(true);
+    });
+
+    tim.set_frequency(Hertz(100_000));
+    */
+
     // Read PWM input
-    //let pwm_input = PwmInput::new_alt(p.TIM2, p.PA1, Pull::None, khz(10));
-    let pwm_input = PwmInput::new_alt(p.TIM1, p.PA9, Pull::None, Hertz(PWM_FREQ));
-    //let pwm_input = PwmInput::new_alt(p.TIM3, p.PC7, Pull::None, khz(10));
-    unwrap!(spawner.spawn(pwm_read_input(pwm_input)));
+    let tim2: embassy_stm32::peripherals::TIM2 = p.TIM2;
+    static TIM2: StaticCell<embassy_stm32::peripherals::TIM2> = StaticCell::new();
+    let tim2 = TIM2.init(tim2);
+    //let tim2_tim = embassy_stm32::timer::low_level::Timer::new(tim2);
+    //let pwm_input = PwmInput::new_alt(p.TIM2, p.PA1, Pull::None, Hertz(PWM_FREQ));
+    //let pwm_input = PwmInput::new(tim2, p.PA0, Pull::None, Hertz(PWM_FREQ));
+    //let pwm_input = PwmInput::new_alt(p.TIM1, p.PA9, Pull::None, Hertz(PWM_FREQ));
+    // let pwm_input = PwmInput::new(p.TIM3, p.PC6, Pull::None, Hertz(PWM_FREQ));
+    //unwrap!(spawner.spawn(pwm_read_input(pwm_input)));
+    unwrap!(spawner.spawn(pwm_read_input(tim2, p.PA0)));
 
     //let dma_ch = unsafe { p.DMA1_CH1.clone_unchecked() };
     let dma_ch = p.DMA1_CH1;
