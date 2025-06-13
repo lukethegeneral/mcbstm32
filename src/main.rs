@@ -403,9 +403,9 @@ async fn pwm_wave(mut pwm: SimplePwm<'static, peripherals::TIM3>) {
 */
 
 #[embassy_executor::task]
-//async fn pwm_read_input(mut pwm_input: PwmInput<'static, peripherals::TIM2>) {
-async fn pwm_read_input(tim2: &'static mut peripherals::TIM2, pa0: peripherals::PA0) {
-    let mut pwm_input = PwmInput::new(tim2, pa0, Pull::None, Hertz(PWM_FREQ));
+async fn pwm_read_input(mut pwm_input: PwmInput<'static, peripherals::TIM2>) {
+    //async fn pwm_read_input(tim2: &'static mut peripherals::TIM2, pa0: peripherals::PA0) {
+    //    let mut pwm_input = PwmInput::new(tim2, pa0, Pull::None, Hertz(PWM_FREQ));
     pwm_input.enable();
     let mut pwm_buf = [0u32; 100];
     let mut i: usize = 0;
@@ -989,16 +989,17 @@ async fn main(spawner: Spawner) {
     */
 
     // Read PWM input
+    /*
     let tim2: embassy_stm32::peripherals::TIM2 = p.TIM2;
     static TIM2: StaticCell<embassy_stm32::peripherals::TIM2> = StaticCell::new();
     let tim2 = TIM2.init(tim2);
-    //let tim2_tim = embassy_stm32::timer::low_level::Timer::new(tim2);
-    //let pwm_input = PwmInput::new_alt(p.TIM2, p.PA1, Pull::None, Hertz(PWM_FREQ));
+    unwrap!(spawner.spawn(pwm_read_input(tim2, p.PA0)));
+    */
+    let pwm_input = PwmInput::new(p.TIM2, p.PA0, Pull::None, Hertz(PWM_FREQ));
     //let pwm_input = PwmInput::new(tim2, p.PA0, Pull::None, Hertz(PWM_FREQ));
     //let pwm_input = PwmInput::new_alt(p.TIM1, p.PA9, Pull::None, Hertz(PWM_FREQ));
     // let pwm_input = PwmInput::new(p.TIM3, p.PC6, Pull::None, Hertz(PWM_FREQ));
-    //unwrap!(spawner.spawn(pwm_read_input(pwm_input)));
-    unwrap!(spawner.spawn(pwm_read_input(tim2, p.PA0)));
+    unwrap!(spawner.spawn(pwm_read_input(pwm_input)));
 
     //let dma_ch = unsafe { p.DMA1_CH1.clone_unchecked() };
     let dma_ch = p.DMA1_CH1;
