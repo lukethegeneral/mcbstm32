@@ -427,8 +427,17 @@ async fn pwm_read_input(tim2: &'static mut peripherals::TIM2, pa0: peripherals::
     let tim2_pac = embassy_stm32::pac::TIM2;
     tim2_pac.cr2().modify(|w| {
         // Enable capture/compare DMA request on update
-        w.set_ccds(0b01.into()); // ON_UPDATE
+        w.set_ccds(0b00.into()); // ON_UPDATE
     });
+    /*
+    tim2_pac.egr().write(|w| {
+        w.set_tg(true);
+        w.set_ccg(0, true);
+        // Generate an update event to load the prescaler value
+        w.set_ug(true);
+    });
+    */
+
     const NUM_CHANNELS: usize = 1;
     tim2_pac.dcr().modify(|w| {
         // Set the number of data to transfer
@@ -463,7 +472,7 @@ async fn pwm_read_input(tim2: &'static mut peripherals::TIM2, pa0: peripherals::
         .par()
         .write_value(tim2_pac.dmar().as_ptr() as u32);
 
-    const NUM_SAMPLES: usize = 1;
+    const NUM_SAMPLES: usize = 100;
     let tim2_buf = [0u16; NUM_SAMPLES * NUM_CHANNELS];
     dma_pac.ch(4).mar().write_value(tim2_buf.as_ptr() as u32);
 
@@ -483,6 +492,7 @@ async fn pwm_read_input(tim2: &'static mut peripherals::TIM2, pa0: peripherals::
     // Wait a bit
     Timer::after(Duration::from_millis(100)).await;
 
+    let mut ticker = Ticker::every(Duration::from_micros(100));
     loop {
         info!(
             "TIM DMA transfer: {:?}, dmar {} ccr1 {}, ccr2 {}",
@@ -492,6 +502,12 @@ async fn pwm_read_input(tim2: &'static mut peripherals::TIM2, pa0: peripherals::
             tim2_pac.ccr(0).read().ccr() as u16,
             tim2_pac.ccr(1).read().ccr() as u16,
         );
+        let avg_period = tim2_buf
+            .iter()
+            .skip(0)
+            .step_by(NUM_CHANNELS)
+            .fold(0, |acc: u32, x| acc + *x as u32)
+            / NUM_SAMPLES as u32;
         /*
         info!(
             "[TIM2] dbl {} dba {} dmar {} ccds {} ude {} uie {} ccr1 {} ccr2 {}",
@@ -506,13 +522,18 @@ async fn pwm_read_input(tim2: &'static mut peripherals::TIM2, pa0: peripherals::
         );
         */
 
-        let period = pwm_input.get_period_ticks();
+        //let period = pwm_input.get_period_ticks();
+        let period = avg_period;
+
         let width = pwm_input.get_width_ticks();
         let duty_cycle = pwm_input.get_duty_cycle();
         let enabled = pwm_input.is_enabled();
         info!(
             "[PWM input enabled {}] period ticks: {}, width ticks: {}, duty cycle: {}",
-            enabled, period, width, duty_cycle
+            enabled,
+            pwm_input.get_period_ticks(),
+            width,
+            duty_cycle
         );
 
         // period in ms -> period / PWM_FREQ
@@ -527,6 +548,19 @@ async fn pwm_read_input(tim2: &'static mut peripherals::TIM2, pa0: peripherals::
             0
         };
 
+        // Write to LCD
+        let mut text_lcd_line_1: String<TEXT_BUFFER_LEN> = String::new();
+        core::write!(&mut text_lcd_line_1, "PWM: {:.2}", rpm,).unwrap();
+
+        {
+            let lcd_unlocked = &mut LCD.lock().await;
+            if let Some(lcd_ref) = lcd_unlocked.as_mut() {
+                lcd_ref.text_buffer[0] = text_lcd_line_1;
+                //                lcd_ref.text_buffer[1] = text_lcd_line_2;
+                lcd_ref.display_text().await;
+            }
+        }
+
         /*
         let rpm = match period {
             0 => 0, // Prevent division by zero
@@ -534,6 +568,7 @@ async fn pwm_read_input(tim2: &'static mut peripherals::TIM2, pa0: peripherals::
         };
         */
 
+        /*
         pwm_buf[i] = rpm;
         if i >= (pwm_buf.len() - 1) {
             info!(
@@ -560,9 +595,10 @@ async fn pwm_read_input(tim2: &'static mut peripherals::TIM2, pa0: peripherals::
             //info!("[x] RPM = {}, i = {}, buf_len = {}", rpm, i, pwm_buf.len());
             i += 1;
         }
+        */
 
-        //Timer::after_millis(1).await;
-        Timer::after_micros(100).await;
+        //Timer::after_micros(100).await;
+        ticker.next().await;
     }
 }
 
