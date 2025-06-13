@@ -425,11 +425,11 @@ async fn pwm_read_input(tim2: &'static mut peripherals::TIM2, pa0: peripherals::
     tim.set_frequency(Hertz(100_000));
     */
     let tim2_pac = embassy_stm32::pac::TIM2;
+    /*
     tim2_pac.cr2().modify(|w| {
         // Enable capture/compare DMA request on update
         w.set_ccds(0b00.into()); // ON_UPDATE
     });
-    /*
     tim2_pac.egr().write(|w| {
         w.set_tg(true);
         w.set_ccg(0, true);
@@ -439,11 +439,13 @@ async fn pwm_read_input(tim2: &'static mut peripherals::TIM2, pa0: peripherals::
     */
 
     const NUM_CHANNELS: usize = 1;
+    /*
     tim2_pac.dcr().modify(|w| {
         // Set the number of data to transfer
         w.set_dbl((NUM_CHANNELS - 1) as u8); // 2 data transfers
         w.set_dba(0b01101.into()); // Set the DMA base address to TIM2 starting from CCR1
     });
+    */
     tim2_pac.dier().modify(|w| {
         // Enable update DMA request
         w.set_ude(true);
@@ -470,7 +472,8 @@ async fn pwm_read_input(tim2: &'static mut peripherals::TIM2, pa0: peripherals::
     dma_pac
         .ch(4)
         .par()
-        .write_value(tim2_pac.dmar().as_ptr() as u32);
+        .write_value(tim2_pac.ccr(0).as_ptr() as u32);
+    //.write_value(tim2_pac.dmar().as_ptr() as u32);
 
     const NUM_SAMPLES: usize = 100;
     let tim2_buf = [0u16; NUM_SAMPLES * NUM_CHANNELS];
@@ -482,10 +485,12 @@ async fn pwm_read_input(tim2: &'static mut peripherals::TIM2, pa0: peripherals::
         .modify(|w| w.set_ndt((NUM_SAMPLES * NUM_CHANNELS) as u16));
 
     //***END DMA set***
+    /*
     tim2_pac.cr1().modify(|w| {
         // Enable TIM2
         w.set_cen(true);
     });
+    */
     // Enable DMA channel 4
     dma_pac.ch(4).cr().modify(|w| w.set_en(true));
 
