@@ -2,14 +2,15 @@
 #![no_main]
 
 mod display;
-use cortex_m::singleton;
+use cortex_m::{singleton, Peripherals};
 use display::{Lcd, TEXT_BUFFER_LEN};
 use embassy_stm32::exti::{self, ExtiInput};
 use embassy_stm32::timer::complementary_pwm::{ComplementaryPwm, ComplementaryPwmPin};
-use embassy_stm32::timer::low_level::OutputCompareMode;
+use embassy_stm32::timer::low_level::{InputCaptureMode, InputTISelection, OutputCompareMode};
 use embassy_stm32::timer::pwm_input::PwmInput;
+use embassy_stm32::timer::qei::Direction;
 use embassy_stm32::timer::simple_pwm::{PwmPin, SimplePwm};
-use embassy_stm32::timer::Channel;
+use embassy_stm32::timer::{self, Channel};
 
 mod log;
 use embassy_stm32::dma::{self, AnyChannel, Transfer};
@@ -21,6 +22,7 @@ use embedded_hal::pwm;
 use log::LogFile;
 use static_cell::{ConstStaticCell, StaticCell};
 use stm32_metapac::bdma::{regs, Dma};
+use stm32_metapac::timer::vals::Dir;
 
 use core::fmt::{write, Write};
 use core::task::{self, Waker};
@@ -48,12 +50,13 @@ bind_interrupts!(struct Irqs {
     ADC1_2 => adc::InterruptHandler<ADC1>;
     I2C1_EV => i2c::EventInterruptHandler<I2C1>;
     I2C1_ER => i2c::ErrorInterruptHandler<I2C1>;
-    //TIM2 => embassy_stm32::timer::CaptureCompareInterruptHandler<peripherals::TIM2>;
-    TIM3 => embassy_stm32::timer::CaptureCompareInterruptHandler<peripherals::TIM3>;
+    TIM2 => embassy_stm32::timer::CaptureCompareInterruptHandler<peripherals::TIM2>;
+    //TIM3 => embassy_stm32::timer::CaptureCompareInterruptHandler<peripherals::TIM3>;
 });
 
 const LOG_FILE_NAME: &str = "RPM_DATA.bin";
 const PWM_FREQ: u32 = 10_000;
+const INCAP_FREQ: u32 = 10_000;
 
 static SIGNAL: Signal<CriticalSectionRawMutex, u32> = Signal::new();
 
@@ -361,6 +364,21 @@ async fn blink(mut sensor: ExtiInput<'static>, mut led: Output<'static>) {
 }
 
 #[embassy_executor::task]
+async fn blinky(led: peripherals::PB10) {
+    let mut led = Output::new(led, Level::High, Speed::Low);
+
+    loop {
+        //        info!("high");
+        led.set_high();
+        Timer::after_millis(300).await;
+
+        //       info!("low");
+        led.set_low();
+        Timer::after_millis(300).await;
+    }
+}
+
+#[embassy_executor::task]
 async fn stop(mut stop_button: ExtiInput<'static>) {
     loop {
         stop_button.wait_for_falling_edge().await;
@@ -407,8 +425,6 @@ async fn pwm_read_input(mut pwm_input: PwmInput<'static, peripherals::TIM2>) {
     //async fn pwm_read_input(tim2: &'static mut peripherals::TIM2, pa0: peripherals::PA0) {
     //    let mut pwm_input = PwmInput::new(tim2, pa0, Pull::None, Hertz(PWM_FREQ));
     pwm_input.enable();
-    let mut pwm_buf = [0u32; 100];
-    let mut i: usize = 0;
     /*
     let tim2 = embassy_stm32::timer::low_level::Timer::new(p.TIM2);
     let timer_registers = tim2.regs_gp16();
@@ -513,19 +529,6 @@ async fn pwm_read_input(mut pwm_input: PwmInput<'static, peripherals::TIM2>) {
             .step_by(NUM_CHANNELS)
             .fold(0, |acc: u32, x| acc + *x as u32)
             / NUM_SAMPLES as u32;
-        /*
-        info!(
-            "[TIM2] dbl {} dba {} dmar {} ccds {} ude {} uie {} ccr1 {} ccr2 {}",
-            tim2_pac.dcr().read().dbl() as u8,
-            tim2_pac.dcr().read().dba() as u8,
-            tim2_pac.dmar().read().dmab() as u32,
-            tim2_pac.cr2().read().ccds() as u8,
-            tim2_pac.dier().read().ude() as u8,
-            tim2_pac.dier().read().uie() as u8,
-            tim2_pac.ccr(0).read().ccr() as u16,
-            tim2_pac.ccr(1).read().ccr() as u16,
-        );
-        */
 
         //let period = pwm_input.get_period_ticks();
         let period = avg_period;
@@ -566,41 +569,169 @@ async fn pwm_read_input(mut pwm_input: PwmInput<'static, peripherals::TIM2>) {
             }
         }
 
-        /*
-        let rpm = match period {
-            0 => 0, // Prevent division by zero
-            _ => 30 * PWM_FREQ / period,
-        };
-        */
+        //Timer::after_micros(100).await;
+        ticker.next().await;
+    }
+}
+
+#[embassy_executor::task]
+async fn input_capture(mut ic: InputCapture<'static, peripherals::TIM2>) {
+    let tim2_pac = embassy_stm32::pac::TIM2;
+    tim2_pac.cr1().modify(|w| {
+        // Enable TIM2
+        w.set_cen(true);
+        w.set_arpe(true);
+        w.set_opm(false);
+        w.set_cms(0b00.into()); // Edge-aligned mode
+        w.set_dir(Dir::UP);
+    });
+
+    //let tim2 = embassy_stm32::timer::low_level::Timer::new(tim2);
+    //tim2.start();
+
+    let tim_arr = tim2_pac.arr().read().arr();
+    let tim_psc = tim2_pac.psc().read();
+    let tim_cnt = tim2_pac.cnt().read().cnt();
+
+    let tim_freq = INCAP_FREQ as u16 / tim_arr / (tim_psc + 1);
+
+    let mut counter = 0;
+    let mut start = Instant::now();
+    let mut ticker = Ticker::every(Duration::from_micros(100));
+    loop {
+        //info!("arr {} psc {} cnt {}", tim_arr, tim_psc, tim_cnt);
+        //info!("wait for rising edge");
+        ic.wait_for_rising_edge(Channel::Ch1).await;
+        counter += 1;
 
         /*
-        pwm_buf[i] = rpm;
-        if i >= (pwm_buf.len() - 1) {
+        let capture_value = ic.get_capture_value(Channel::Ch1);
+        info!(
+            "new capture! {} counter {} tim {}",
+            capture_value, counter, tim_freq
+        );
+        */
+
+        if counter == 100 {
+            let elapsed = Instant::now() - start;
+            let freq = if elapsed.as_millis() > 0 {
+                //INCAP_FREQ / elapsed.as_millis() as u32
+                (100 * 1000) / elapsed.as_millis() as u32
+            } else {
+                0
+            };
             info!(
-                "[XXX] RPM = {}, i = {}, sum = {}",
-                rpm,
-                i,
-                pwm_buf.iter().sum::<u32>()
+                "Captured 100 values in {} ms, {} ticks, frequency: {} Hz, rpm {}",
+                elapsed.as_millis(),
+                elapsed.as_ticks(),
+                freq,
+                freq * 60 / 2
             );
-            rpm = pwm_buf.iter().sum::<u32>() / pwm_buf.len() as u32;
-            // Write to LCD
-            let mut text_lcd_line_1: String<TEXT_BUFFER_LEN> = String::new();
-            core::write!(&mut text_lcd_line_1, "PWM: {:.2}", rpm,).unwrap();
-
-            {
-                let lcd_unlocked = &mut LCD.lock().await;
-                if let Some(lcd_ref) = lcd_unlocked.as_mut() {
-                    lcd_ref.text_buffer[0] = text_lcd_line_1;
-                    //                lcd_ref.text_buffer[1] = text_lcd_line_2;
-                    lcd_ref.display_text().await;
-                }
-            }
-            i = 0;
-        } else {
-            //info!("[x] RPM = {}, i = {}, buf_len = {}", rpm, i, pwm_buf.len());
-            i += 1;
+            counter = 0;
+            start = Instant::now();
         }
-        */
+
+        //ticker.next().await;
+    }
+
+    const NUM_CHANNELS: usize = 1;
+    tim2_pac.dier().modify(|w| {
+        // Enable update DMA request
+        w.set_ude(true);
+        // Enable update interrupt request
+        //w.set_uie(true);
+        w.set_tde(true);
+        w.set_ccde(0, true);
+    });
+    //tim2_pac.cr1().modify(|w| {
+    //    // Enable TIM2
+    //    w.set_cen(true);
+    //});
+    // ***Start DMA set***
+    // Set DMA
+    let dma_pac = embassy_stm32::pac::DMA1;
+
+    // ****
+    // Turn on DMA settings manually
+    dma_pac.ch(4).cr().modify(|w| {
+        w.set_msize(0b01.into()); //16 bits
+        w.set_psize(0b01.into()); //16 bits
+        w.set_minc(true);
+        w.set_circ(true);
+    });
+
+    // Set TIM2 address
+    dma_pac
+        .ch(4)
+        .par()
+        .write_value(tim2_pac.ccr(0).as_ptr() as u32);
+
+    const NUM_SAMPLES: usize = 100;
+    let tim2_buf = [0u16; NUM_SAMPLES * NUM_CHANNELS];
+    dma_pac.ch(4).mar().write_value(tim2_buf.as_ptr() as u32);
+
+    dma_pac
+        .ch(4)
+        .ndtr()
+        .modify(|w| w.set_ndt((NUM_SAMPLES * NUM_CHANNELS) as u16));
+
+    //***END DMA set***
+    // Enable DMA channel 1
+    dma_pac.ch(4).cr().modify(|w| w.set_en(true));
+
+    // Wait a bit
+    Timer::after(Duration::from_millis(100)).await;
+
+    ic.set_input_ti_selection(Channel::Ch1, InputTISelection::Normal);
+    //ic.set_input_capture_filter(channel, FilterValue::NO_FILTER);
+    ic.set_input_capture_mode(Channel::Ch1, InputCaptureMode::Rising);
+    //ic.set_input_capture_prescaler(channel, 0);
+    ic.enable(Channel::Ch1);
+    //tim2_pac.ccer().modify(|w| {
+    //    // Enable capture/compare channel 1
+    //    w.set_cce(0, true);
+    //});
+    //ic.enable_input_interrupt(channel, true);
+
+    // Wait a bit
+    Timer::after(Duration::from_millis(100)).await;
+
+    let mut ticker = Ticker::every(Duration::from_micros(100));
+    loop {
+        //ic.wait_for_rising_edge(Channel::Ch1).await;
+        let capture_value = ic.get_capture_value(Channel::Ch1);
+        info!("new capture! {}", capture_value);
+
+        info!(
+            "TIM DMA transfer: {:?}, ccer0 {}, dmar {} ccr1 {} ccr2 {}",
+            //tim2_buf[..NUM_CHANNELS * 3],
+            tim2_buf[..],
+            tim2_pac.ccer().read().cce(0) as u8,
+            tim2_pac.dmar().read().dmab() as u32,
+            tim2_pac.ccr(0).read().ccr() as u16,
+            tim2_pac.ccr(1).read().ccr() as u16,
+        );
+        let avg = tim2_buf
+            .iter()
+            .skip(0)
+            .step_by(NUM_CHANNELS)
+            .fold(0, |acc: u32, x| acc + *x as u32)
+            / NUM_SAMPLES as u32;
+
+        let rpm = avg;
+
+        // Write to LCD
+        let mut text_lcd_line_1: String<TEXT_BUFFER_LEN> = String::new();
+        core::write!(&mut text_lcd_line_1, "PWM: {:.2}", rpm,).unwrap();
+
+        {
+            let lcd_unlocked = &mut LCD.lock().await;
+            if let Some(lcd_ref) = lcd_unlocked.as_mut() {
+                lcd_ref.text_buffer[0] = text_lcd_line_1;
+                //                lcd_ref.text_buffer[1] = text_lcd_line_2;
+                lcd_ref.display_text().await;
+            }
+        }
 
         //Timer::after_micros(100).await;
         ticker.next().await;
@@ -988,18 +1119,37 @@ async fn main(spawner: Spawner) {
     tim.set_frequency(Hertz(100_000));
     */
 
+    // Blinky task
+    unwrap!(spawner.spawn(blinky(p.PB10)));
+
     // Read PWM input
     /*
     let tim2: embassy_stm32::peripherals::TIM2 = p.TIM2;
     static TIM2: StaticCell<embassy_stm32::peripherals::TIM2> = StaticCell::new();
     let tim2 = TIM2.init(tim2);
-    unwrap!(spawner.spawn(pwm_read_input(tim2, p.PA0)));
     */
-    let pwm_input = PwmInput::new(p.TIM2, p.PA0, Pull::None, Hertz(PWM_FREQ));
+    //unwrap!(spawner.spawn(pwm_read_input(tim2, p.PA0)));
     //let pwm_input = PwmInput::new(tim2, p.PA0, Pull::None, Hertz(PWM_FREQ));
     //let pwm_input = PwmInput::new_alt(p.TIM1, p.PA9, Pull::None, Hertz(PWM_FREQ));
     // let pwm_input = PwmInput::new(p.TIM3, p.PC6, Pull::None, Hertz(PWM_FREQ));
+
+    /*
+    let pwm_input = PwmInput::new(p.TIM2, p.PA0, Pull::None, Hertz(PWM_FREQ));
     unwrap!(spawner.spawn(pwm_read_input(pwm_input)));
+    */
+    // Input capture
+    let ch1 = CapturePin::new_ch1(p.PA0, Pull::None);
+    let ic = InputCapture::new(
+        p.TIM2,
+        Some(ch1),
+        None,
+        None,
+        None,
+        Irqs,
+        Hertz(INCAP_FREQ),
+        Default::default(),
+    );
+    unwrap!(spawner.spawn(input_capture(ic)));
 
     //let dma_ch = unsafe { p.DMA1_CH1.clone_unchecked() };
     let dma_ch = p.DMA1_CH1;
@@ -1015,10 +1165,11 @@ async fn main(spawner: Spawner) {
     //    }
     unwrap!(spawner.spawn(dma_transfer(dma_ch, &adc_dma_transfer)));
 
+    /*
     let sensor = ExtiInput::new(p.PC10, p.EXTI10, Pull::Up);
     let led = Output::new(p.PB10, Level::Low, Speed::VeryHigh);
-
     unwrap!(spawner.spawn(blink(sensor, led)));
+    */
 
     // Stop button
     let stop_button = ExtiInput::new(p.PC13, p.EXTI13, Pull::Up);
