@@ -305,52 +305,6 @@ fn adc_dma_transfer(
     }
 }
 
-pub(crate) struct ChannelState {
-    waker: AtomicWaker,
-    complete_count: core::sync::atomic::AtomicUsize,
-}
-impl ChannelState {
-    pub(crate) const NEW: Self = Self {
-        waker: AtomicWaker::new(),
-        complete_count: core::sync::atomic::AtomicUsize::new(0),
-    };
-}
-
-struct DmaTransfer<'a> {
-    channel: embassy_stm32::PeripheralRef<'a, AnyChannel>,
-}
-impl<'a> DmaTransfer<'a> {
-    fn is_running() -> bool {
-        let dma_pac = embassy_stm32::pac::DMA1;
-
-        if dma_pac.ch(0).ndtr().read().ndt() == 0 {
-            true
-        } else {
-            false
-        }
-    }
-}
-
-impl<'a> core::future::Future for DmaTransfer<'a> {
-    type Output = ();
-    fn poll(
-        mut self: core::pin::Pin<&mut Self>,
-        cx: &mut task::Context<'_>,
-    ) -> task::Poll<Self::Output> {
-        // let state: &ChannelState = &STATE[self.channel.id as usize];
-        let state: &ChannelState = &ChannelState::NEW;
-        //let x = AtomicWaker::new();
-
-        state.waker.register(cx.waker());
-
-        if DmaTransfer::<'a>::is_running() {
-            task::Poll::Pending
-        } else {
-            task::Poll::Ready(())
-        }
-    }
-}
-
 #[embassy_executor::task]
 async fn blink(mut sensor: ExtiInput<'static>, mut led: Output<'static>) {
     loop {
