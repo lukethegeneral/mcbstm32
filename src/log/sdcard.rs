@@ -1,14 +1,15 @@
 use defmt::*;
 use embassy_stm32::gpio::Output;
 use embassy_stm32::mode::Async;
-use embassy_stm32::spi;
+use embassy_stm32::spi::mode;
 use embassy_stm32::spi::Spi;
+use embassy_stm32::spi::{self};
 use embassy_stm32::time::Hertz;
 use embassy_time::Delay;
 use embedded_hal_bus::spi::{ExclusiveDevice, NoDelay};
 use embedded_sdmmc::sdcard::SdCard;
 use embedded_sdmmc::{File, VolumeManager};
-use static_cell::StaticCell;
+use static_cell::{ConstStaticCell, StaticCell};
 
 // Dummy time source for SD card
 pub struct DummyTimesource();
@@ -30,7 +31,7 @@ pub struct LogFile {
     pub log_file: File<
         'static,
         //SdCard<ExclusiveDevice<Spi<'static, Async>, Output<'static>, NoDelay>, Delay>,
-        SdCard<ExclusiveDevice<Spi<'static, Async>, Output<'static>, Delay>, Delay>,
+        SdCard<ExclusiveDevice<Spi<'static, Async, mode::Master>, Output<'static>, Delay>, Delay>,
         DummyTimesource,
         4,
         4,
@@ -41,7 +42,7 @@ pub struct LogFile {
 impl LogFile {
     pub fn new(
         //spi_dev: ExclusiveDevice<Spi<'static, Async>, Output<'static>, NoDelay>,
-        spi_dev: ExclusiveDevice<Spi<'static, Async>, Output<'static>, Delay>,
+        spi_dev: ExclusiveDevice<Spi<'static, Async, mode::Master>, Output<'static>, Delay>,
         file_name: &str,
     ) -> Self {
         let sdcard = SdCard::new(spi_dev, Delay);
@@ -61,7 +62,7 @@ impl LogFile {
         static VOL: StaticCell<
             VolumeManager<
                 //SdCard<ExclusiveDevice<Spi<'_, Async>, Output<'_>, NoDelay>, Delay>,
-                SdCard<ExclusiveDevice<Spi<'_, Async>, Output<'_>, Delay>, Delay>,
+                SdCard<ExclusiveDevice<Spi<'_, Async, mode::Master>, Output<'_>, Delay>, Delay>,
                 DummyTimesource,
             >,
         > = StaticCell::new();
@@ -78,7 +79,7 @@ impl LogFile {
             embedded_sdmmc::Volume<
                 '_,
                 //SdCard<ExclusiveDevice<Spi<'_, Async>, Output<'_>, NoDelay>, Delay>,
-                SdCard<ExclusiveDevice<Spi<'_, Async>, Output<'_>, Delay>, Delay>,
+                SdCard<ExclusiveDevice<Spi<'_, Async, mode::Master>, Output<'_>, Delay>, Delay>,
                 DummyTimesource,
                 4,
                 4,
@@ -94,7 +95,7 @@ impl LogFile {
             embedded_sdmmc::Directory<
                 '_,
                 //SdCard<ExclusiveDevice<Spi<'_, Async>, Output<'_>, NoDelay>, Delay>,
-                SdCard<ExclusiveDevice<Spi<'_, Async>, Output<'_>, Delay>, Delay>,
+                SdCard<ExclusiveDevice<Spi<'_, Async, mode::Master>, Output<'_>, Delay>, Delay>,
                 DummyTimesource,
                 4,
                 4,

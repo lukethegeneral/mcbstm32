@@ -1,4 +1,5 @@
 use defmt::*;
+use embassy_stm32::i2c::mode;
 use embassy_stm32::i2c::I2c;
 use embassy_stm32::mode::Async;
 use embedded_graphics::mono_font::iso_8859_13::FONT_10X20;
@@ -22,7 +23,7 @@ const TEXT_STYLE: MonoTextStyle<'static, BinaryColor> = MonoTextStyleBuilder::ne
 
 pub struct Lcd {
     display: Ssd1306<
-        I2CInterface<I2c<'static, Async>>,
+        I2CInterface<I2c<'static, Async, mode::Master>>,
         DisplaySize128x64,
         BufferedGraphicsMode<DisplaySize128x64>,
     >,
@@ -30,7 +31,7 @@ pub struct Lcd {
     pub text_buffer: Vec<String<TEXT_BUFFER_LEN>, 2>,
 }
 impl Lcd {
-    pub fn new(i2c: I2c<'static, Async>) -> Self {
+    pub fn new(i2c: I2c<'static, Async, mode::Master>) -> Self {
         // Initialize text buffer with 2 lines
         let mut text_buffer: Vec<String<TEXT_BUFFER_LEN>, 2> = Vec::new();
         text_buffer.push(String::<TEXT_BUFFER_LEN>::new()).unwrap();

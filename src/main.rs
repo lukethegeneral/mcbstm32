@@ -69,6 +69,7 @@ static DMA1_CH_1: DmaCh1Type = Mutex::new(None);
 type LcdType = Mutex<ThreadModeRawMutex, Option<Lcd>>;
 static LCD: LcdType = Mutex::new(None);
 
+//type LogFileType = Mutex<CriticalSectionRawMutex, Option<LogFile>>;
 type LogFileType = Mutex<ThreadModeRawMutex, Option<LogFile>>;
 static LOG_FILE: LogFileType = Mutex::new(None);
 
